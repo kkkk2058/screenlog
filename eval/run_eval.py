@@ -16,27 +16,48 @@
     uv run python eval/run_eval.py            바닐라 — 필터 없이 순수 벡터 검색
     uv run python eval/run_eval.py --filter    2단계 — 정답 app/hour/date를 필터로 직접 넘김
     uv run python eval/run_eval.py --route     3단계 — router.route()가 질문에서 뽑은 필터로 넘김
+    uv run python eval/run_eval.py --auto      4단계 — ask_auto() 그대로. 날짜 범위 질문은
+                                                여기서만 정리/비교/집계 경로를 탄다
 
 --filter는 사람이 정답을 직접 넣은 것이라 "검색이 맞는가"만 본다.
 --route는 라우팅이 스스로 뽑은 값을 쓰므로 "라우팅이 맞는가"까지 같이 본다.
+--auto는 실제 서비스가 쓸 진입점 그대로라, 나머지 세 모드와 다르게 여러 날짜
+질문(q10 등)에서 근거(hits)가 없을 수 있다 — 하루 요약으로 답하는 구조라
+이벤트 단위 근거를 안 돌려주기 때문이다. 그럴 땐 app/date/hour 채점을 건너뛴다.
 """
 
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from screenlog.ask import ask                      # noqa: E402
+from screenlog.ask import ask, ask_auto             # noqa: E402
 from screenlog.config import RETRIEVE_K            # noqa: E402
 from screenlog.index import get_collection         # noqa: E402
 from screenlog.router import route                 # noqa: E402
+from screenlog.source import LOCAL_TZ              # noqa: E402
 
 QUESTIONS = Path(__file__).parent / "questions.jsonl"
 RUNS_DIR = Path(__file__).parent / "runs"
 
 EXCERPT = 300      # 근거 원문은 화면 캡처라 길고 개인정보가 섞인다. 판단할 만큼만 남긴다.
+
+
+def resolve_expect_date(question, today):
+    """"어제"/"오늘"처럼 상대 날짜인 질문은 expect_date를 실행 시점 기준으로 계산한다.
+
+    questions.jsonl에 "2026-07-27"처럼 고정 문자열로 박아두면 하루만 지나도
+    낡는다. expect_date_offset(오늘로부터 며칠 전/후)만 저장해두고, 평가를
+    돌릴 때마다 이 함수가 실제 날짜로 바꾼다. offset이 없으면(절대 날짜
+    질문이거나 애초에 날짜가 없는 질문) 파일에 있는 값을 그대로 쓴다.
+    """
+    offset = question.get("expect_date_offset")
+    if offset is None:
+        return question["expect_date"]
+    day = today + timedelta(days=offset)
+    return day.strftime("%Y-%m-%d")
 
 
 def score(question, hits, answer):
@@ -90,10 +111,13 @@ def score_route(question, plan):
 
 
 def main():
+    use_auto = "--auto" in sys.argv
     use_route = "--route" in sys.argv
     use_filter = "--filter" in sys.argv
 
-    if use_route:
+    if use_auto:
+        stage = "auto"
+    elif use_route:
         stage = "routed"
     elif use_filter:
         stage = "meta_filter"
@@ -101,6 +125,11 @@ def main():
         stage = "vanilla"
 
     questions = [json.loads(line) for line in QUESTIONS.open(encoding="utf-8") if line.strip()]
+
+    # "어제"/"오늘" 같은 상대 날짜 질문의 정답을 지금 이 실행 시점 기준으로 계산한다.
+    today = datetime.now(LOCAL_TZ)
+    for question in questions:
+        question["expect_date"] = resolve_expect_date(question, today)
 
     col = get_collection()
     print(f"단계={stage} / 코퍼스 {col.count()}개 이벤트 / 질문 {len(questions)}개 / k={RETRIEVE_K}\n")
@@ -114,7 +143,14 @@ def main():
         route_plan = None
         route_result = None
 
-        if use_route:
+        if use_auto:
+            # ask_auto()가 알아서 라우팅하고 알맞은 경로(검색/정리/비교/집계)로 답한다.
+            answer, route_plan, hits = ask_auto(question["question"])
+            route_result = score_route(question, route_plan)
+            # 여러 날짜 경로는 이벤트 단위 근거가 없다(하루 요약으로 답하므로).
+            # score()는 리스트를 순회하니, 없으면 빈 리스트로 채점을 건너뛴다.
+            hits = hits or []
+        elif use_route:
             # 정답을 넘기지 않는다. route()가 질문만 보고 뽑은 값을 그대로 쓴다.
             route_plan = route(question["question"])
             route_result = score_route(question, route_plan)
@@ -162,7 +198,7 @@ def main():
               f"{mark(s['date_hit']):4} {mark(s['hour_hit']):4} "
               f"{s['n_apps']:3} {mark(s['says_none']):4} {question['question']}")
 
-    if use_route:
+    if use_route or use_auto:
         print("\n--- 라우팅 정확도 (route()가 뽑은 값 vs 정답) ---")
         n = len(results)
         app_ok = sum(1 for r in results if r["route_result"]["app_ok"])

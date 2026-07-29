@@ -1,18 +1,18 @@
-{"qid": "q01", "category": "app_filter", "question": "카카오톡에서 무슨 대화를 했어?", "expect_app": "카카오톡", "expect_date": null, "expect_hour": null, "note": "앱 이름을 그대로 말함. 벡터 검색엔 app 축이 없어서 실패 예상"}
-{"qid": "q02", "category": "app_filter", "question": "Discord에서 무슨 얘기가 오갔어?", "expect_app": "Discord", "expect_date": null, "expect_hour": null, "note": "앱 이름 직접 지정"}
-{"qid": "q03", "category": "app_filter", "question": "zoom 회의에서 뭘 했어?", "expect_app": "zoom.us", "expect_date": null, "expect_hour": null, "note": "별칭 zoom -> zoom.us. 코퍼스 값과 표기가 다름"}
-{"qid": "q04", "category": "app_filter", "question": "VS Code에서 무슨 코드를 봤어?", "expect_app": "Code", "expect_date": null, "expect_hour": null, "note": "별칭 VS Code -> Code"}
-{"qid": "q05", "category": "app_filter", "question": "터미널에서 무슨 명령어를 실행했어?", "expect_app": "터미널", "expect_date": null, "expect_hour": null, "note": "코퍼스에서 비중이 매우 낮은 앱(13프레임). 편중에 묻히는지 확인"}
-{"qid": "q06", "category": "time_filter", "question": "어제 뭐 했어?", "expect_app": null, "expect_date": "2026-07-27", "expect_hour": null, "note": "상대 날짜. 벡터 검색엔 date 축이 없음"}
-{"qid": "q07", "category": "time_filter", "question": "7월 24일에 무슨 작업했어?", "expect_app": null, "expect_date": "2026-07-24", "expect_hour": null, "note": "절대 날짜 지정"}
-{"qid": "q08", "category": "time_filter", "question": "오후 3시에 뭐 하고 있었어?", "expect_app": null, "expect_date": null, "expect_hour": 15, "note": "시각 지정. hour 메타는 있지만 필터를 안 씀"}
-{"qid": "q09", "category": "summary", "question": "오늘 하루 뭐 했는지 정리해줘", "expect_app": null, "expect_date": "2026-07-28", "expect_hour": null, "note": "하루 전체 조회. top-k 검색으론 특정 앱만 뽑힘"}
-{"qid": "q10", "category": "summary", "question": "이번 주에 주로 무슨 일을 했어?", "expect_app": null, "expect_date": null, "expect_hour": null, "note": "여러 날 조회. 날짜 범위 개념이 없음"}
-{"qid": "q11", "category": "semantic", "question": "RAG 파이프라인 설계에 대해 무슨 얘기를 했어?", "expect_app": null, "expect_date": null, "expect_hour": null, "note": "내용 기반. 필터가 필요 없어 바닐라도 될 것으로 기대"}
-{"qid": "q12", "category": "semantic", "question": "임베딩 모델이나 벡터 검색에 대해 뭘 찾아봤어?", "expect_app": null, "expect_date": null, "expect_hour": null, "note": "내용 기반"}
-{"qid": "q13", "category": "semantic", "question": "배드민턴 관련된 내용이 있었어?", "expect_app": null, "expect_date": null, "expect_hour": null, "note": "생활 내용. 업무 텍스트가 압도적인 코퍼스에서 묻히는지"}
-{"qid": "q14", "category": "keyword", "question": "chromadb에 대한 내용을 찾아줘", "expect_app": null, "expect_date": null, "expect_hour": null, "note": "고유명사 정확 매칭. 하이브리드 검색 필요성 판단용"}
-{"qid": "q15", "category": "keyword", "question": "screenpipe에 대해 뭘 알아봤어?", "expect_app": null, "expect_date": null, "expect_hour": null, "note": "고유명사 정확 매칭"}
-{"qid": "q16", "category": "hard_phrasing", "question": "화상회의 앱에서 뭘 했어?", "expect_app": "zoom.us", "expect_date": null, "expect_hour": null, "note": "APP_ALIASES에 없는 표현. 규칙은 못 잡고 LLM 폴백이 걸려야 함"}
-{"qid": "q17", "category": "hard_phrasing", "question": "파일 관리자에서 뭘 찾아봤어?", "expect_app": "Finder", "expect_date": null, "expect_hour": null, "note": "APP_ALIASES에 없는 표현"}
-{"qid": "q18", "category": "hard_phrasing", "question": "쉘에서 무슨 명령을 실행했어?", "expect_app": "터미널", "expect_date": null, "expect_hour": null, "note": "APP_ALIASES에 없는 표현"}
+{"qid": "q01", "category": "app_filter", "question": "카카오톡에서 무슨 대화를 했어?", "expect_app": "카카오톡", "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "앱 이름을 그대로 말함. 벡터 검색엔 app 축이 없어서 실패 예상"}
+{"qid": "q02", "category": "app_filter", "question": "Discord에서 무슨 얘기가 오갔어?", "expect_app": "Discord", "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "앱 이름 직접 지정"}
+{"qid": "q03", "category": "app_filter", "question": "zoom 회의에서 뭘 했어?", "expect_app": "zoom.us", "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "별칭 zoom -> zoom.us. 코퍼스 값과 표기가 다름"}
+{"qid": "q04", "category": "app_filter", "question": "VS Code에서 무슨 코드를 봤어?", "expect_app": "Code", "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "별칭 VS Code -> Code"}
+{"qid": "q05", "category": "app_filter", "question": "터미널에서 무슨 명령어를 실행했어?", "expect_app": "터미널", "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "코퍼스에서 비중이 매우 낮은 앱(13프레임). 편중에 묻히는지 확인"}
+{"qid": "q06", "category": "time_filter", "question": "어제 뭐 했어?", "expect_app": null, "expect_date": null, "expect_date_offset": -1, "expect_hour": null, "note": "상대 날짜. 정답을 고정 문자열로 두면 하루만 지나도 낡는다 - offset으로 매번 계산"}
+{"qid": "q07", "category": "time_filter", "question": "7월 24일에 무슨 작업했어?", "expect_app": null, "expect_date": "2026-07-24", "expect_date_offset": null, "expect_hour": null, "note": "절대 날짜 지정 - 시간이 지나도 안 변하므로 offset이 필요 없음"}
+{"qid": "q08", "category": "time_filter", "question": "오후 3시에 뭐 하고 있었어?", "expect_app": null, "expect_date": null, "expect_date_offset": null, "expect_hour": 15, "note": "시각 지정. hour 메타는 있지만 필터를 안 씀"}
+{"qid": "q09", "category": "summary", "question": "오늘 하루 뭐 했는지 정리해줘", "expect_app": null, "expect_date": null, "expect_date_offset": 0, "expect_hour": null, "note": "하루 전체 조회. 상대 날짜라 offset으로 매번 계산"}
+{"qid": "q10", "category": "summary", "question": "이번 주에 주로 무슨 일을 했어?", "expect_app": null, "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "여러 날 조회. 날짜 범위 개념이 없음"}
+{"qid": "q11", "category": "semantic", "question": "RAG 파이프라인 설계에 대해 무슨 얘기를 했어?", "expect_app": null, "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "내용 기반. 필터가 필요 없어 바닐라도 될 것으로 기대"}
+{"qid": "q12", "category": "semantic", "question": "임베딩 모델이나 벡터 검색에 대해 뭘 찾아봤어?", "expect_app": null, "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "내용 기반"}
+{"qid": "q13", "category": "semantic", "question": "배드민턴 관련된 내용이 있었어?", "expect_app": null, "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "생활 내용. 업무 텍스트가 압도적인 코퍼스에서 묻히는지"}
+{"qid": "q14", "category": "keyword", "question": "chromadb에 대한 내용을 찾아줘", "expect_app": null, "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "고유명사 정확 매칭. 하이브리드 검색 필요성 판단용"}
+{"qid": "q15", "category": "keyword", "question": "screenpipe에 대해 뭘 알아봤어?", "expect_app": null, "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "고유명사 정확 매칭"}
+{"qid": "q16", "category": "hard_phrasing", "question": "화상회의 앱에서 뭘 했어?", "expect_app": "zoom.us", "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "APP_ALIASES에 없는 표현. 규칙은 못 잡고 LLM 폴백이 걸려야 함"}
+{"qid": "q17", "category": "hard_phrasing", "question": "파일 관리자에서 뭘 찾아봤어?", "expect_app": "Finder", "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "APP_ALIASES에 없는 표현"}
+{"qid": "q18", "category": "hard_phrasing", "question": "쉘에서 무슨 명령을 실행했어?", "expect_app": "터미널", "expect_date": null, "expect_date_offset": null, "expect_hour": null, "note": "APP_ALIASES에 없는 표현"}
