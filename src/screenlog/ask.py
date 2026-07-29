@@ -155,3 +155,16 @@ if __name__ == "__main__":
         print(f"\n[라우팅: app={plan['app']} hour={plan['hour']} date={plan['date']} "
               f"dates={plan['dates']} intent={plan['intent']}]")
         print(f"\n{answer}")
+
+        # 답과 근거를 같이 본다. 답만 보면 검색이 엉뚱한 걸 가져온 건지 LLM이
+        # 답을 쓰면서 틀린 건지 구분이 안 된다. 여러 날짜 경로는 이벤트 단위
+        # 근거가 없어서(하루 요약으로 답하므로) hits가 None이다.
+        if hits is None:
+            print("\n(여러 날짜 요약 경로 — 이벤트 단위 근거 없음)")
+        elif hits:
+            print(f"\n--- 근거 {len(hits)}개 ---")
+            for hit in hits:
+                print(f"  [{hit['distance']:.3f}] {hit['start']}  "
+                      f"{hit['app']} / {hit['window'][:40]}")
+        else:
+            print("\n(근거 없음)")
