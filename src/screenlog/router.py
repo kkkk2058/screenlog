@@ -142,7 +142,8 @@ def find_date_range(question, today):
 # 여러 날짜 질문이 정리/비교/집계 중 뭔지 구분하는 신호 단어.
 # COUNT_WORDS를 먼저 본다 — "가장 많이 쓴 앱"처럼 두 목록에 다 걸릴 수 있는
 # 문장은 카운트 신호("많이")가 더 구체적이라 그쪽을 우선한다.
-COUNT_WORDS = ["몇 번", "몇 개", "얼마나 자주", "가장 많이", "제일 많이"]
+COUNT_WORDS = ["몇 번", "몇 개", "얼마나 자주", "가장 많이", "제일 많이",
+               "집계", "모아", "합계", "통계", "총"]
 COMPARE_WORDS = ["제일", "가장", "언제가", "비교", "차이", "패턴", "트렌드", "경향"]
 
 
@@ -168,60 +169,67 @@ def route_rules(question, today):
     }
 
 
-LLM_PROMPT = """질문을 읽고 화면 기록 검색 필터를 뽑아라. JSON만 출력해라.
+LLM_PROMPT = """질문을 읽고 화면 기록 검색 필터를 뽑아라.
 
-app: 다음 중 하나 또는 null - {apps}
-    질문이 특정 앱이나 앱 종류(에디터, 메신저, 화상회의 등)를 가리킬 때만 채운다.
-    "~에 대해 뭘 찾아봤어", "~얘기했어"처럼 내용을 묻는 질문은 앱을 추측하지 말고 null로 둔다.
-hour: 0~23 정수 또는 null (한국 시간, "오후 3시"면 15)
-date: "YYYY-MM-DD" 또는 null (오늘은 {today})
+세 필드 다 같은 규칙이다 — 질문에 그 정보가 실제로 언급됐을 때만 채우고,
+없으면 추측하지 말고 null로 둔다.
 
-질문: {question}
+app: 특정 앱이나 앱 종류(에디터, 메신저, 화상회의 등)를 가리킬 때만.
+    "~에 대해 뭘 찾아봤어"처럼 내용만 묻는 질문은 null.
+hour: "오후 3시"처럼 시각이 실제로 언급됐을 때만 (한국 시간, 0~23). "무슨 명령을
+    실행했어?"처럼 시각 언급이 없으면 null. 오늘 몇 시인지와는 무관하다.
+date: "어제", "오늘", "7월 24일"처럼 날짜가 실제로 언급됐을 때만 ("YYYY-MM-DD",
+    오늘은 {today}). 날짜 언급이 없는 질문에 오늘 날짜를 채우지 않는다.
 
-출력 예시: {{"app": "카카오톡", "hour": null, "date": null}}
-출력 예시(내용 질문): {{"app": null, "hour": null, "date": null}}"""
+질문: {question}"""
+
+
+# app을 이 스키마의 enum으로 강제한다. LLM이 코퍼스에 없는 앱 이름을 "지어내는" 것
+# 자체가 API 레벨에서 불가능해진다 — 응답을 받은 뒤 골라내는 게 아니라, 애초에
+# 이 8개 중 하나 또는 null만 낼 수 있게 막는다.
+def _route_schema():
+    return {
+        "type": "object",
+        "properties": {
+            "app": {"type": ["string", "null"], "enum": [*APP_ALIASES.keys(), None]},
+            "hour": {"type": ["integer", "null"], "minimum": 0, "maximum": 23},
+            "date": {"type": ["string", "null"]},
+        },
+        "required": ["app", "hour", "date"],
+        "additionalProperties": False,
+    }
 
 
 def route_llm(question, today):
     """규칙이 못 잡은 표현을 LLM에게 맡긴다. ("화상회의 앱에서", "그 채팅 앱" 등)
 
-    LLM 응답은 신뢰할 수 없는 외부 입력으로 취급한다 — JSON이 아닐 수도 있고,
-    코퍼스에 없는 앱 이름을 지어낼 수도 있다. 그래서 여기서만 방어적으로 검사한다.
+    response_format으로 스키마를 강제한다(structured output). app이 enum이라
+    코퍼스에 없는 앱을 지어낼 수 없고, hour도 0~23 범위 밖으로 못 나온다 —
+    응답을 받은 뒤 방어적으로 걸러내던 걸 API가 애초에 막아준다.
+    date는 형식까지는 스키마로 강제 못 해서 최소한의 확인만 남겨둔다.
     """
     client = OpenAI(base_url=BASE_URL, api_key=os.environ["OPENAI_API_KEY"])
-    prompt = LLM_PROMPT.format(
-        apps=", ".join(APP_ALIASES.keys()),
-        today=today.strftime("%Y-%m-%d"),
-        question=question,
-    )
+    prompt = LLM_PROMPT.format(today=today.strftime("%Y-%m-%d"), question=question)
     response = client.chat.completions.create(
         model=CHAT_MODEL,
         temperature=0,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": "route_plan", "schema": _route_schema(), "strict": True},
+        },
         messages=[{"role": "user", "content": prompt}],
     )
-    raw = response.choices[0].message.content
-
-    # LLM이 ```json 같은 껍데기를 붙일 수 있어서, {...} 부분만 찾아낸다.
-    match = re.search(r"\{.*\}", raw, re.S)
-    if not match:
-        return {"app": None, "hour": None, "date": None}
 
     try:
-        parsed = json.loads(match.group(0))
+        parsed = json.loads(response.choices[0].message.content)
     except json.JSONDecodeError:
         return {"app": None, "hour": None, "date": None}
-
-    app = parsed.get("app")
-    if app not in APP_ALIASES:              # 코퍼스에 없는 앱을 지어냈을 수 있다
-        app = None
-
-    hour = parsed.get("hour")
-    if not isinstance(hour, int) or not (0 <= hour <= 23):
-        hour = None
 
     date = parsed.get("date")
     if not isinstance(date, str):
         date = None
+
+    return {"app": parsed.get("app"), "hour": parsed.get("hour"), "date": date}
 
     return {"app": app, "hour": hour, "date": date}
 

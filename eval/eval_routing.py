@@ -9,11 +9,15 @@ run_eval.py는 검색+생성까지 전부 돌려서 LLM 비용이 질문 수만�
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # run_eval.py를 같은 폴더에서 import
 
+from run_eval import resolve_expect_date            # noqa: E402
 from screenlog.router import get_stats, reset_stats, route  # noqa: E402
+from screenlog.source import LOCAL_TZ                # noqa: E402
 
 QUESTIONS = Path(__file__).parent / "questions.jsonl"
 
@@ -24,6 +28,11 @@ def mark(ok):
 
 def main():
     questions = [json.loads(line) for line in QUESTIONS.open(encoding="utf-8") if line.strip()]
+
+    # "어제"/"오늘" 같은 상대 날짜 질문의 정답을 지금 시점 기준으로 계산한다.
+    today = datetime.now(LOCAL_TZ)
+    for q in questions:
+        q["expect_date"] = resolve_expect_date(q, today)
 
     reset_stats()
 
