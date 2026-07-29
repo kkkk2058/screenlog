@@ -12,6 +12,8 @@ dependencies = [
     "sentence-transformers>=5.6.0",  # bge-m3 임베딩 (로컬)
     "openai>=2.46.0",           # LLM 호출 (게이트웨이도 openai 규격)
     "python-dotenv>=1.2.2",     # API 키를 코드에 안 박기
+    "fastapi>=0.115.0",         # 6단계 웹 서비스
+    "uvicorn>=0.32.0",          # FastAPI를 띄우는 서버
 ]
 
 [dependency-groups]
