@@ -15,7 +15,9 @@ from openai import OpenAI
 
 from screenlog.config import BASE_URL, CHAT_MODEL, CONTEXT_CHARS_PER_HIT, RETRIEVE_K
 from screenlog.index import embed, get_collection
+from screenlog.router import route
 from screenlog.source import LOCAL_TZ
+from screenlog.summarize import compare_range, count_range, format_count, summarize_range
 
 PROMPT = """아래는 사용자의 컴퓨터 화면 사용 기록이다.
 
@@ -113,17 +115,43 @@ def ask(question, k=RETRIEVE_K, app=None, hour=None, date=None):
     return response.choices[0].message.content, hits
 
 
+def ask_auto(question, k=RETRIEVE_K, mode="hybrid"):
+    """질문만 받아서 route()로 필터를 뽑고, 알아서 알맞은 방식으로 답한다.
+
+    (답변, plan, hits) 3개를 돌려준다. hits는 여러 날짜 경로(dates가 있을 때)엔
+    이벤트 단위 근거가 없어서 None이다 — 하루 요약으로 뭉쳐 답하지, top-k
+    이벤트를 직접 돌려주는 구조가 아니기 때문이다.
+
+    plan["dates"]가 있으면(여러 날짜 질문) 유형에 따라 다르게 답한다:
+        집계   summarize.count_range() — LLM 없이 metadata를 센다
+        비교   summarize.compare_range() — 하루 요약들을 다시 LLM으로 비교
+        정리   summarize.summarize_range() — 하루 요약들을 그대로 이어붙임
+
+    dates가 없으면(하루 이하 질문) 지금까지의 search+generate 경로(ask())를 그대로 쓴다.
+    """
+    plan = route(question, mode=mode)
+
+    if plan["dates"]:
+        if plan["intent"] == "집계":
+            counter = count_range(plan["dates"], app=plan["app"])
+            answer = format_count(counter)
+        elif plan["intent"] == "비교":
+            answer = compare_range(question, plan["dates"], app=plan["app"], hour=plan["hour"])
+        else:
+            answer = summarize_range(plan["dates"], app=plan["app"], hour=plan["hour"])
+        return answer, plan, None
+
+    answer, hits = ask(question, k=k, app=plan["app"], hour=plan["hour"], date=plan["date"])
+    return answer, plan, hits
+
+
 if __name__ == "__main__":
     while True:
         question = input("\n질문 (엔터로 종료) > ").strip()
         if not question:
             break
 
-        answer, hits = ask(question)
+        answer, plan, hits = ask_auto(question)
+        print(f"\n[라우팅: app={plan['app']} hour={plan['hour']} date={plan['date']} "
+              f"dates={plan['dates']} intent={plan['intent']}]")
         print(f"\n{answer}")
-
-        # 답과 근거를 같이 본다. 답만 보면 검색이 엉뚱한 걸 가져온 걸 놓친다.
-        print(f"\n--- 근거 {len(hits)}개 ---")
-        for hit in hits:
-            print(f"  [{hit['distance']:.3f}] {hit['start']}  "
-                  f"{hit['app']} / {hit['window'][:40]}")
