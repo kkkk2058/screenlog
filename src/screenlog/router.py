@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 
 from openai import OpenAI
 
-from screenlog.config import BASE_URL, CHAT_MODEL
+from screenlog.config import BASE_URL, CHAT_MODEL, MAX_RANGE_DAYS
 from screenlog.source import LOCAL_TZ
 
 # 코퍼스에 실제로 있는 app 값 -> 사람이 질문에 쓸 법한 표현들.
@@ -115,6 +115,50 @@ def find_hour(question):
     return hour
 
 
+def find_date_range(question, today):
+    """"이번 주"/"지난 3일" 같은 표현 -> 날짜 문자열 리스트(오름차순). 없으면 None.
+
+    find_date()는 날짜 하나만 다룬다. 여러 날에 걸친 질문은 답을 만드는 방식
+    자체가 다르므로(하루씩 요약 후 합치기), 여기서 따로 뽑아 리스트로 돌려준다.
+    """
+    if re.search(r"이번\s*주", question):
+        monday = today - timedelta(days=today.weekday())
+        n_days = today.weekday() + 1   # 월요일부터 오늘까지
+        return [(monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(n_days)]
+
+    if re.search(r"(저번|지난)\s*주", question):
+        this_monday = today - timedelta(days=today.weekday())
+        last_monday = this_monday - timedelta(days=7)
+        return [(last_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+
+    match = re.search(r"(?:최근|지난)\s*(\d{1,3})\s*일", question)
+    if match:
+        n = min(int(match.group(1)), MAX_RANGE_DAYS)   # 안전 상한
+        return [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(n - 1, -1, -1)]
+
+    return None
+
+
+# 여러 날짜 질문이 정리/비교/집계 중 뭔지 구분하는 신호 단어.
+# COUNT_WORDS를 먼저 본다 — "가장 많이 쓴 앱"처럼 두 목록에 다 걸릴 수 있는
+# 문장은 카운트 신호("많이")가 더 구체적이라 그쪽을 우선한다.
+COUNT_WORDS = ["몇 번", "몇 개", "얼마나 자주", "가장 많이", "제일 많이"]
+COMPARE_WORDS = ["제일", "가장", "언제가", "비교", "차이", "패턴", "트렌드", "경향"]
+
+
+def classify_range_question(question):
+    """여러 날짜 질문을 정리/비교/집계 중 하나로 분류한다.
+
+    셋이 답을 만드는 방식이 완전히 다르다 — 정리는 그냥 이어붙이고, 비교는
+    LLM에게 다시 한번 판단시키고, 집계는 LLM 없이 metadata를 직접 센다.
+    """
+    if any(word in question for word in COUNT_WORDS):
+        return "집계"
+    if any(word in question for word in COMPARE_WORDS):
+        return "비교"
+    return "정리"
+
+
 def route_rules(question, today):
     """규칙만으로 라우팅. LLM 호출 없음, 공짜."""
     return {
@@ -204,7 +248,7 @@ def reset_stats():
 
 
 def route(question, mode="hybrid", today=None):
-    """질문 -> {app, hour, date} 딕셔너리.
+    """질문 -> {app, hour, date, dates, intent} 딕셔너리.
 
     mode:
         rules   규칙만. 공짜, 즉시. 사전에 없는 표현은 못 잡는다.
@@ -213,25 +257,32 @@ def route(question, mode="hybrid", today=None):
 
     today를 안 주면 실행 시점의 오늘 날짜를 쓴다. 테스트할 때는 특정
     날짜를 고정해서 넣을 수 있게 인자로 남겨뒀다.
+
+    dates/intent는 app/hour/date와 별개로 항상 규칙만으로 계산한다. 날짜
+    범위를 LLM에게 맡길 정도로 애매한 표현은 아직 다루지 않기 때문이다.
     """
     if today is None:
         today = datetime.now(LOCAL_TZ)
 
     if mode == "rules":
         _stats["rules"] += 1
-        return route_rules(question, today)
-
-    if mode == "llm":
+        plan = route_rules(question, today)
+    elif mode == "llm":
         _stats["llm"] += 1
-        return route_llm(question, today)
+        plan = route_llm(question, today)
+    else:
+        # hybrid
+        plan = route_rules(question, today)
+        if _has_filter(plan):
+            _stats["rules"] += 1
+        else:
+            _stats["llm"] += 1
+            plan = route_llm(question, today)
 
-    # hybrid
-    plan = route_rules(question, today)
-    if _has_filter(plan):
-        _stats["rules"] += 1
-        return plan
-    _stats["llm"] += 1
-    return route_llm(question, today)
+    dates = find_date_range(question, today)
+    plan["dates"] = dates
+    plan["intent"] = classify_range_question(question) if dates else None
+    return plan
 
 
 if __name__ == "__main__":
@@ -243,8 +294,13 @@ if __name__ == "__main__":
         "7월 24일에 무슨 작업했어?",
         "오후 3시에 뭐 하고 있었어?",
         "오늘 하루 뭐 했는지 정리해줘",
+        "이번 주에 주로 무슨 일을 했어?",
+        "이번 주에 카카오톡을 몇 번 켰어?",
+        "이번 주 언제가 제일 바빴어?",
     ]
     for q in questions:
         plan = route(q)
+        dates = f"{len(plan['dates'])}일" if plan["dates"] else "-"
         print(f"app={str(plan['app']):15} hour={str(plan['hour']):5} "
-              f"date={str(plan['date']):12} | {q}")
+              f"date={str(plan['date']):12} dates={dates:5} "
+              f"intent={str(plan['intent']):5} | {q}")
