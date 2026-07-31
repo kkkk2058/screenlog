@@ -1,0 +1,11 @@
+services:
+  screenlog:
+    image: ghcr.io/kkkk2058/screenlog:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - ~/.screenpipe/db.sqlite:/root/.screenpipe/db.sqlite:ro
+      - ./chroma:/app/chroma
+    env_file:
+      - .env
+    restart: unless-stopped
