@@ -31,6 +31,19 @@ def to_local(ts: str) -> datetime:
     return datetime.fromisoformat(ts).astimezone(LOCAL_TZ)
 
 
+_WEEKDAYS_KO = ["월", "화", "수", "목", "금", "토", "일"]
+
+
+def weekday_ko(date_str: str) -> str:
+    """"2026-07-27" (또는 그 앞 10글자가 날짜인 타임스탬프) -> "월".
+
+    LLM한테 요일 계산을 맡기면 틀린다(실측: 7/27을 일요일이라고 답함) —
+    프롬프트에 날짜를 보여줄 때 요일을 미리 계산해서 박아 넣어, LLM이
+    직접 계산할 일 자체를 없앤다.
+    """
+    return _WEEKDAYS_KO[datetime.strptime(date_str[:10], "%Y-%m-%d").weekday()]
+
+
 def _connect() -> sqlite3.Connection:
     if not SCREENPIPE_DB.exists():
         raise SystemExit(f"screenpipe DB 없음: {SCREENPIPE_DB}")

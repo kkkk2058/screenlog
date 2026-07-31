@@ -8,44 +8,76 @@
 합쳐두면 엉뚱한 걸 가져와도 그럴듯한 답이 나와서 눈치채지 못한다.
 """
 
-import os
 from datetime import datetime
 
 from openai import OpenAI
 
-from screenlog.config import BASE_URL, CHAT_MODEL, CONTEXT_CHARS_PER_HIT, RETRIEVE_K
+from screenlog.config import (
+    AI_APPS,
+    API_KEY,
+    BASE_URL,
+    CHAT_MODEL,
+    CONTEXT_CHARS_PER_HIT,
+    MAX_PERIOD_SEARCH_K,
+    RETRIEVE_K,
+)
 from screenlog.index import embed, get_collection
 from screenlog.router import route
-from screenlog.source import LOCAL_TZ
-from screenlog.summarize import compare_range, count_range, format_count, summarize_range
+from screenlog.source import LOCAL_TZ, weekday_ko
+from screenlog.summarize import (
+    compare_periods,
+    compare_range,
+    count_range,
+    format_count,
+    summarize_period,
+    summarize_range,
+)
 
 PROMPT = """아래는 사용자의 컴퓨터 화면 사용 기록이다.
 
-오늘은 {today}이다. "오늘", "어제" 같은 표현은 이 날짜를 기준으로 판단한다.
+오늘은 {today}({weekday})이다. 질문에 "오늘"/"어제"/"엊그제" 같은 상대 날짜
+표현이 있어도 다시 계산하지 않는다 — 검색 단계에서 이미 그 날짜로 필터링해서
+아래 근거를 골라왔으니, 근거에 실제로 붙어있는 날짜/요일만 그대로 쓴다.
+그 결과 오늘 날짜와 안 맞아 보여도(예: "엊그제"인데 근거 날짜가 다르게
+느껴져도) 근거의 날짜가 맞다 — 재계산해서 다른 날짜를 답하지 않는다.
 
 {context}
 
 질문: {question}
 
 규칙:
-- 기록에 있는 내용만으로 답한다. 없으면 "기록에 없습니다"라고 답한다.
-- 답할 때 시각과 앱 이름을 함께 밝힌다.
+- 각 근거는 "[캡처 시각, 앱 / 창]" 형태로 시작한다. 화면이 실제로 찍힌
+  시각은 이 캡처 시각이다 — 카카오톡 대화 내용 안에 있는 "오후 11:16"
+  같은 메시지 전송 시각과 혼동하지 않는다. 질문의 시간대와 맞는지는
+  캡처 시각으로 판단한다.
+- 근거에 있는 내용만으로 답한다. 근거에 없는 사건/시각/앱은 만들어내지 않는다.
+- 캡처 시각이 질문 시간대에 맞는 근거가 하나라도 있으면, 본문에 그 정확한
+  단어가 없어도(예: "1시"라는 글자가 없어도) 그 근거로 답한다. 관련
+  근거가 하나도 없을 때만 "기록에 없습니다"라고 답한다.
+- 답할 때 근거에 적힌 캡처 시각과 앱 이름을 그대로 밝힌다.
 """
 
 
-def build_where(app=None, hour=None, date=None):
-    """app/hour/date 조건으로 chroma where 딕셔너리를 만든다.
+def build_where(app=None, hour_start=None, hour_end=None, dates=None):
+    """app/hour_range/dates 조건으로 chroma where 딕셔너리를 만든다.
 
     조건이 하나도 없으면 None을 돌려준다 (필터 없이 전체에서 검색).
     조건이 2개 이상이면 chroma가 $and로 묶어달라고 요구한다.
+
+    hour는 범위($gte/$lte)로 건다 — 단일 시각("1시")도 start==end로 오므로
+    같은 코드 경로로 처리된다. dates는 날짜 하나짜리 질문도 포함해서
+    항상 리스트로 받는다($in) — "하루면 이 필드, 여러 날이면 저 필드"처럼
+    나누지 않는다(router.route() 참고).
     """
     conditions = []
     if app:
         conditions.append({"app": app})
-    if hour is not None:
-        conditions.append({"hour": hour})
-    if date:
-        conditions.append({"date": date})
+    if hour_start is not None:
+        conditions.append({"hour": {"$gte": hour_start}})
+    if hour_end is not None:
+        conditions.append({"hour": {"$lte": hour_end}})
+    if dates:
+        conditions.append({"date": {"$in": dates}})
 
     if len(conditions) == 0:
         return None
@@ -54,16 +86,30 @@ def build_where(app=None, hour=None, date=None):
     return {"$and": conditions}
 
 
-def search(question, k=RETRIEVE_K, app=None, hour=None, date=None):
+def search(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=None, dates=None):
     """질문과 비슷한 이벤트 k개를 찾는다.
 
-    app/hour/date를 주면 그 조건을 만족하는 이벤트 안에서만 찾는다.
+    app/hour_range/dates를 주면 그 조건을 만족하는 이벤트 안에서만 찾는다.
     벡터 유사도는 "이 문서의 앱이 뭔가" 같은 축을 못 보기 때문에,
     앱/시각/날짜는 벡터가 아니라 metadata 필터로 걸러야 한다.
+
+    site("YouTube" 등)는 window 제목 안의 부분 문자열이라 chroma where로
+    못 거른다(summarize.browse()와 같은 이유). chroma가 골라준 top-k를
+    다시 site로 걸러내면 k개보다 적게 남을 수 있어서, site가 있을 때는
+    5배 더 가져온 뒤 걸러서 최대한 k개를 채운다.
+
+    app이 AI_APPS(Claude/Code)를 명시적으로 지정한 게 아니면 그 두 앱의
+    이벤트는 후보에서 뺀다 — "재귀 오염"(docs/troubleshooting-star.md #8):
+    이 도구가 디버깅하며 터미널/에디터에 출력한 요약문이 화면 캡처로
+    다시 색인돼서, 무관한 질문에 "근거"로 잡혀 LLM이 존재하지 않는
+    시각/이벤트를 인용하는 사고가 실측으로 확인됐다. "코딩 몇 시간
+    했어?"처럼 app=Code로 명시한 질문은 걸러지면 안 되므로 그때는 예외.
     """
     col = get_collection()
-    where = build_where(app, hour, date)
-    result = col.query(query_embeddings=embed([question]), n_results=k, where=where)
+    where = build_where(app, hour_start, hour_end, dates)
+    exclude_ai_apps = app not in AI_APPS
+    n_results = k * 5 if (site or exclude_ai_apps) else k
+    result = col.query(query_embeddings=embed([question]), n_results=n_results, where=where)
 
     # chroma는 결과를 [[...]] 로 한 겹 싸서 준다. 질문을 여러 개 던질 수 있어서다.
     hits = []
@@ -74,7 +120,13 @@ def search(question, k=RETRIEVE_K, app=None, hour=None, date=None):
         hit["text"] = doc
         hit["distance"] = distance     # 0에 가까울수록 질문과 비슷하다
         hits.append(hit)
-    return hits
+
+    if site:
+        hits = [h for h in hits if site.lower() in h.get("window", "").lower()]
+    if exclude_ai_apps:
+        hits = [h for h in hits if h["app"] not in AI_APPS]
+
+    return hits[:k]
 
 
 def build_context(hits):
@@ -92,21 +144,22 @@ def build_context(hits):
         text = hit["text"]
         if len(text) > CONTEXT_CHARS_PER_HIT:
             text = text[:CONTEXT_CHARS_PER_HIT] + " …(잘림)"
-        blocks.append(f"[{hit['start']}, {hit['app']} / {hit['window']}]\n{text}")
+        blocks.append(f"[{hit['start']}({weekday_ko(hit['start'])}), {hit['app']} / {hit['window']}]\n{text}")
     return "\n\n".join(blocks)
 
 
-def ask(question, k=RETRIEVE_K, app=None, hour=None, date=None):
+def ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=None, dates=None):
     """질문 -> (답변, 근거 목록).
 
-    app/hour/date는 그대로 search()에 넘긴다. 아직 질문 문장에서
-    자동으로 뽑아내는 건 안 만들었다 (다음 단계인 라우팅의 몫).
+    app/hour_range/site/dates는 그대로 search()에 넘긴다.
     """
-    hits = search(question, k, app=app, hour=hour, date=date)
+    hits = search(question, k, app=app, hour_start=hour_start, hour_end=hour_end,
+                  site=site, dates=dates)
     today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
-    prompt = PROMPT.format(today=today, context=build_context(hits), question=question)
+    prompt = PROMPT.format(today=today, weekday=weekday_ko(today),
+                            context=build_context(hits), question=question)
 
-    client = OpenAI(base_url=BASE_URL, api_key=os.environ["OPENAI_API_KEY"])
+    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
     response = client.chat.completions.create(
         model=CHAT_MODEL,
         temperature=0,
@@ -115,33 +168,83 @@ def ask(question, k=RETRIEVE_K, app=None, hour=None, date=None):
     return response.choices[0].message.content, hits
 
 
-def ask_auto(question, k=RETRIEVE_K, mode="hybrid"):
+def ask_auto(question, k=RETRIEVE_K):
     """질문만 받아서 route()로 필터를 뽑고, 알아서 알맞은 방식으로 답한다.
 
-    (답변, plan, hits) 3개를 돌려준다. hits는 여러 날짜 경로(dates가 있을 때)엔
-    이벤트 단위 근거가 없어서 None이다 — 하루 요약으로 뭉쳐 답하지, top-k
-    이벤트를 직접 돌려주는 구조가 아니기 때문이다.
+    (답변, plan, hits) 3개를 돌려준다. hits는 정리/비교/집계 경로엔 이벤트
+    단위 근거가 없어서 None이다 — 요약으로 뭉쳐 답하지, top-k 이벤트를 직접
+    돌려주는 구조가 아니기 때문이다. 검색 경로는 항상 hits를 돌려준다.
 
-    plan["dates"]가 있으면(여러 날짜 질문) 유형에 따라 다르게 답한다:
+    intent가 "검색"이면 periods가 있어도 기간 전체를 훑어 요약하지 않는다.
+    "이번 주에 카톡에서 약속 잡은 거 찾아봐"는 그 주에 있었던 일 전체가
+    아니라 "약속" 관련 대화만 원하는 질문이라, periods가 있다고 무조건
+    summarize_range()로 보내면 관련 없는 내용까지 다 정리해버린다(실측으로
+    확인된 문제). 그래서 검색은 기간이 있으면 그 기간 안에서(dates=$in),
+    없으면 전체 기록에서 벡터 검색(ask())으로 답한다.
+
+    intent가 검색이 아니면(정리/비교/집계) periods 개수로 갈린다.
+    plan["periods"]가 2개 이상이면("저번주엔 몇 번, 이번주엔 몇 번 켰어"처럼
+    기간 자체가 여러 개 언급된 질문) intent에 따라 다르게 답한다. 집계를
+    LLM 요약 비교로 흘려보내면 LLM이 요약문에서 "며칠 언급됐는지"를 세는
+    식으로 틀린 숫자를 만들어낸다 — 실측으로 확인됨(실제 340회를 "5회"로
+    답함). 그래서 집계는 기간이 여러 개여도 count_range()로 metadata를
+    직접 센다.
+        집계   기간별로 summarize.count_range() — LLM 없이 metadata를 센다
+        정리   기간별로 summarize.summarize_period() — 그대로 이어붙임
+        비교   summarize.compare_periods() — 기간별 요약을 다시 LLM으로 비교
+
+    plan["periods"]가 1개면(단일 기간 질문) 같은 세 갈래를 하루 단위로 적용한다:
         집계   summarize.count_range() — LLM 없이 metadata를 센다
         비교   summarize.compare_range() — 하루 요약들을 다시 LLM으로 비교
         정리   summarize.summarize_range() — 하루 요약들을 그대로 이어붙임
-
-    dates가 없으면(하루 이하 질문) 지금까지의 search+generate 경로(ask())를 그대로 쓴다.
     """
-    plan = route(question, mode=mode)
+    plan = route(question)
+    periods = plan["periods"]
+    hour_start, hour_end = plan["hour_start"], plan["hour_end"]
 
-    if plan["dates"]:
+    if plan["intent"] == "검색":
+        dates = [d for period in periods for d in period["dates"]] or None
+        # 기간이 있는 검색("14일치 디스코드 공지 찾아줘")은 RETRIEVE_K(10)로
+        # 자르면 기간이 길어질수록 관련 이벤트가 top-10 밖으로 밀려서 통째로
+        # 빠진다. 기간 없는 단발 질문보다 훨씬 넉넉한 상한을 따로 쓴다.
+        search_k = MAX_PERIOD_SEARCH_K if dates else k
+        answer, hits = ask(question, k=search_k, app=plan["app"], hour_start=hour_start,
+                            hour_end=hour_end, site=plan["site"], dates=dates)
+        return answer, plan, hits
+
+    if len(periods) >= 2:
         if plan["intent"] == "집계":
-            counter = count_range(plan["dates"], app=plan["app"])
-            answer = format_count(counter)
-        elif plan["intent"] == "비교":
-            answer = compare_range(question, plan["dates"], app=plan["app"], hour=plan["hour"])
+            blocks = []
+            for period in periods:
+                counter = count_range(period["dates"], app=plan["app"], site=plan["site"])
+                blocks.append(f"[{period['label']}]\n{format_count(counter)}")
+            answer = "\n\n".join(blocks)
+        elif plan["intent"] == "정리":
+            answer = "\n\n".join(
+                summarize_period(period, app=plan["app"], hour_start=hour_start,
+                                  hour_end=hour_end, site=plan["site"])
+                for period in periods
+            )
         else:
-            answer = summarize_range(plan["dates"], app=plan["app"], hour=plan["hour"])
+            answer = compare_periods(question, periods, app=plan["app"], hour_start=hour_start,
+                                      hour_end=hour_end, site=plan["site"])
         return answer, plan, None
 
-    answer, hits = ask(question, k=k, app=plan["app"], hour=plan["hour"], date=plan["date"])
+    if len(periods) == 1:
+        dates = periods[0]["dates"]
+        if plan["intent"] == "집계":
+            counter = count_range(dates, app=plan["app"], site=plan["site"])
+            answer = format_count(counter)
+        elif plan["intent"] == "비교":
+            answer = compare_range(question, dates, app=plan["app"], hour_start=hour_start,
+                                    hour_end=hour_end, site=plan["site"])
+        else:
+            answer = summarize_range(dates, app=plan["app"], hour_start=hour_start,
+                                      hour_end=hour_end, site=plan["site"])
+        return answer, plan, None
+
+    answer, hits = ask(question, k=k, app=plan["app"], hour_start=hour_start,
+                        hour_end=hour_end, site=plan["site"])
     return answer, plan, hits
 
 
@@ -152,8 +255,11 @@ if __name__ == "__main__":
             break
 
         answer, plan, hits = ask_auto(question)
-        print(f"\n[라우팅: app={plan['app']} hour={plan['hour']} date={plan['date']} "
-              f"dates={plan['dates']} intent={plan['intent']}]")
+        periods = ", ".join(f"{p['label']}({len(p['dates'])}일)" for p in plan["periods"])
+        hour = (f"{plan['hour_start']}-{plan['hour_end']}"
+                if plan["hour_start"] is not None else "-")
+        print(f"\n[라우팅: app={plan['app']} hour={hour} "
+              f"periods=[{periods}] intent={plan['intent']}]")
         print(f"\n{answer}")
 
         # 답과 근거를 같이 본다. 답만 보면 검색이 엉뚱한 걸 가져온 건지 LLM이

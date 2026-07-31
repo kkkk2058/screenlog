@@ -1,27 +1,28 @@
-"""3. 라우팅 — 질문 문장에서 app/hour/date를 자동으로 뽑는다
+"""3. 라우팅 — 질문 문장에서 app/hour/기간/intent를 뽑는다
 
-2단계에서는 사람이 `ask("질문", app="카카오톡")`처럼 필터를 직접 넣어줬다.
-여기서는 그 필터를 **질문 문장만 보고** 알아내는 함수를 만든다.
+원래는 정규식 규칙(app 별칭 매칭, 날짜 정규식, 신호 단어 목록)을 먼저 쓰고
+규칙이 못 잡을 때만 LLM을 불렀다(hybrid). 그런데 "저번주 정리하고 이번주랑
+비교" 처럼 기간이 여러 개 섞인 문장에서 규칙이 계속 깨졌다 — 정규식은 기간을
+하나만 뽑게 짜여 있었고, 신호 단어 우선순위도 문장이 조금만 비틀리면
+틀린 쪽을 골랐다. 규칙을 계속 추가하며 쫓아가는 대신, 질문 분석 자체를
+LLM 구조화 출력 하나로 통일했다.
 
-규칙만으로는 한계가 있다 — APP_ALIASES에 없는 표현("화상회의 앱")은 규칙이
-못 잡고, 그러면 필터 없이 조용히 vanilla 검색으로 떨어진다. 그래서 규칙이
-아무것도 못 잡았을 때만 LLM에게 물어본다(hybrid). 매번 LLM을 부르지 않는
-이유는 비용 때문이다 — 앱 이름을 그대로 말하는 흔한 질문은 규칙으로 공짜에
-끝나고, 사전에 없는 표현일 때만 LLM 비용을 쓴다.
+개인용 도구라 질문당 LLM 호출 1번의 비용/지연은 감당할 만하고, 그 대신
+"기간이 여러 개", "기간+비교가 같이 오는" 같은 조합을 규칙 추가 없이
+처리할 수 있다. app 필드는 여전히 enum으로 강제해서 코퍼스에 없는 앱을
+지어내는 것 자체를 API 레벨에서 막는다.
 """
 
 import json
-import os
-import re
 from datetime import datetime, timedelta
 
 from openai import OpenAI
 
-from screenlog.config import BASE_URL, CHAT_MODEL, MAX_RANGE_DAYS
+from screenlog.config import API_KEY, BASE_URL, CHAT_MODEL, MAX_RANGE_DAYS
 from screenlog.source import LOCAL_TZ
 
 # 코퍼스에 실제로 있는 app 값 -> 사람이 질문에 쓸 법한 표현들.
-# where 필터는 완전 일치라서, "줌"이라고 물으면 "zoom.us"로 바꿔줘야 걸린다.
+# LLM에게 정확한 enum 값을 알려주는 용도로 프롬프트에 그대로 박아 넣는다.
 APP_ALIASES = {
     "카카오톡": ["카카오톡", "카톡"],
     "Google Chrome": ["크롬", "chrome", "구글 크롬"],
@@ -33,183 +34,174 @@ APP_ALIASES = {
     "터미널": ["터미널", "terminal"],
 }
 
+_APP_HINT = "\n".join(f"    {app}: {'/'.join(aliases)}" for app, aliases in APP_ALIASES.items())
 
-def find_app(question):
-    """질문에서 앱 이름을 찾는다. 못 찾으면 None.
+# app은 "Google Chrome"처럼 실행 중인 프로그램 단위라, "유튜브에서 본 영상"처럼
+# 브라우저 *안에서* 방문한 사이트는 app만으로 못 거른다("이번 주 유튜브 정리해줘"가
+# 크롬 전체를 다 정리해버린 게 이 문제였다) — window 제목에 사이트 이름이 그대로
+# 찍히길래(실측: "... - YouTube - Chrome - ...") 그걸 부분 문자열로 거르는
+# 별도 필터를 뒀다. chroma where는 metadata 부분일치를 못 해서, site는 chroma
+# 쿼리가 아니라 가져온 이벤트를 파이썬에서 후처리로 거른다(browse_events.py 참고).
+SITE_ALIASES = {
+    "YouTube": ["유튜브", "youtube"],
+    "Notion": ["노션", "notion"],
+    "Gmail": ["지메일", "gmail"],
+    "GitHub": ["깃허브", "github"],
+    "Google Docs": ["구글 독스", "google docs", "docs.google.com"],
+    "Google Calendar": ["구글 캘린더", "google calendar", "calendar.google.com"],
+}
 
-    별칭이 여러 개 걸릴 수 있어서, 가장 긴 별칭이 이긴 걸로 한다.
-    "code"가 "vs code" 안의 "code"를 가로채지 않게 하려는 것이다.
-    """
-    question_lower = question.lower()
-
-    best_app = None
-    best_length = 0
-    for app, aliases in APP_ALIASES.items():
-        for alias in aliases:
-            if alias.lower() in question_lower:
-                if len(alias) > best_length:
-                    best_app = app
-                    best_length = len(alias)
-
-    return best_app
-
-
-def find_date(question, today):
-    """질문에서 날짜를 찾는다. "어제", "7월 24일" 같은 표현만 다룬다.
-
-    상대 표현("어제", "그제")은 today를 기준으로 계산한다. today를 인자로
-    받는 이유는, 실행 시점의 실제 오늘 날짜는 이 함수가 알 필요 없고
-    호출하는 쪽(route())이 한 곳에서만 계산하게 하기 위해서다.
-    """
-    if "그제" in question or "그저께" in question:
-        day = today - timedelta(days=2)
-        return day.strftime("%Y-%m-%d")
-
-    if "어제" in question:
-        day = today - timedelta(days=1)
-        return day.strftime("%Y-%m-%d")
-
-    if "오늘" in question:
-        return today.strftime("%Y-%m-%d")
-
-    # "7월 24일" 같은 절대 날짜. 연도는 질문에 안 나오니 today의 연도를 쓴다.
-    match = re.search(r"(\d{1,2})월\s*(\d{1,2})일", question)
-    if match:
-        month = int(match.group(1))
-        day = int(match.group(2))
-        return f"{today.year}-{month:02d}-{day:02d}"
-
-    return None
+_SITE_HINT = "\n".join(f"    {site}: {'/'.join(aliases)}" for site, aliases in SITE_ALIASES.items())
 
 
-def find_hour(question):
-    """질문에서 시각을 찾는다. "오후 3시" -> 15. 못 찾으면 None.
-
-    오전/오후가 없는 "3시"는 낮 시간으로 본다. 화면 기록을 새벽 3시에
-    물어보는 경우는 드물기 때문이다. 틀리면 이 필터가 엉뚱한 시간대를
-    줄 뿐이니, 나중에 eval로 확인하면 바로 드러난다.
-    """
-    match = re.search(r"(오전|오후|아침|저녁|밤)?\s*(\d{1,2})\s*시", question)
-    if not match:
-        return None
-
-    ampm = match.group(1)
-    hour = int(match.group(2))
-
-    if hour > 23:
-        return None
-
-    if ampm in ("오후", "저녁", "밤"):
-        if hour == 12:
-            return 12
-        return hour + 12
-
-    if ampm in ("오전", "아침"):
-        if hour == 12:
-            return 0
-        return hour
-
-    # 오전/오후 표시가 없다. 1~8시는 새벽보다 오후로 보는 게 자연스럽다.
-    if 1 <= hour <= 8:
-        return hour + 12
-    return hour
 
 
-def find_date_range(question, today):
-    """"이번 주"/"지난 3일" 같은 표현 -> 날짜 문자열 리스트(오름차순). 없으면 None.
-
-    find_date()는 날짜 하나만 다룬다. 여러 날에 걸친 질문은 답을 만드는 방식
-    자체가 다르므로(하루씩 요약 후 합치기), 여기서 따로 뽑아 리스트로 돌려준다.
-    """
-    if re.search(r"이번\s*주", question):
-        monday = today - timedelta(days=today.weekday())
-        n_days = today.weekday() + 1   # 월요일부터 오늘까지
-        return [(monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(n_days)]
-
-    if re.search(r"(저번|지난)\s*주", question):
-        this_monday = today - timedelta(days=today.weekday())
-        last_monday = this_monday - timedelta(days=7)
-        return [(last_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
-
-    match = re.search(r"(?:최근|지난)\s*(\d{1,3})\s*일", question)
-    if match:
-        n = min(int(match.group(1)), MAX_RANGE_DAYS)   # 안전 상한
-        return [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(n - 1, -1, -1)]
-
-    return None
 
 
-# 여러 날짜 질문이 정리/비교/집계 중 뭔지 구분하는 신호 단어.
-# COUNT_WORDS를 먼저 본다 — "가장 많이 쓴 앱"처럼 두 목록에 다 걸릴 수 있는
-# 문장은 카운트 신호("많이")가 더 구체적이라 그쪽을 우선한다.
-COUNT_WORDS = ["몇 번", "몇 개", "얼마나 자주", "가장 많이", "제일 많이",
-               "집계", "모아", "합계", "통계", "총"]
-COMPARE_WORDS = ["제일", "가장", "언제가", "비교", "차이", "패턴", "트렌드", "경향"]
+ROUTE_PROMPT = """질문을 읽고 화면 기록 조회 계획을 세워라. 오늘은 {today}이다.
 
+app: 특정 앱이나 앱 종류를 가리킬 때만 아래 후보 중 하나로 채운다. 없으면 null.
+{app_hint}
 
-def classify_range_question(question):
-    """여러 날짜 질문을 정리/비교/집계 중 하나로 분류한다.
+site: 브라우저 안에서 방문한 특정 사이트/서비스를 가리킬 때만 아래 후보 중
+    하나로 채운다("유튜브에서 뭐 봤어" 등). app이 "Google Chrome"이어도 site가
+    없으면 브라우저 전체를 다 보게 되니, 사이트가 언급됐으면 반드시 채운다.
+{site_hint}
 
-    셋이 답을 만드는 방식이 완전히 다르다 — 정리는 그냥 이어붙이고, 비교는
-    LLM에게 다시 한번 판단시키고, 집계는 LLM 없이 metadata를 직접 센다.
-    """
-    if any(word in question for word in COUNT_WORDS):
-        return "집계"
-    if any(word in question for word in COMPARE_WORDS):
-        return "비교"
-    return "정리"
+hour_range: "오후 3시"나 "2시부터 4시까지"처럼 시각이 실제로 언급됐을 때만
+    채운다 (한국 시간, 0~23). {{"start": int, "end": int}}이고, 시각이
+    하나만 언급되면 start==end. 언급이 없으면 start/end 둘 다 null.
 
+periods: 질문이 다루는 기간을 리스트로 뽑는다.
+    - "어제 뭐 했어"처럼 하루짜리 질문도 기간 하나로 취급한다 (start==end).
+    - "이번 주", "저번 주", "최근 7일"처럼 범위 질문도 기간 하나.
+    - "저번주 정리하고 이번주랑 비교"처럼 기간이 여러 개 언급되면 각각을
+      별도 항목으로 넣는다 (이 예시는 2개).
+    - 특정 기간 언급이 전혀 없는 질문("카카오톡에서 무슨 얘기 했어?")은
+      빈 리스트로 둔다 — 그 경우 전체 기록에서 검색한다.
+    각 항목은 {{"label": str, "start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}}이고
+    start<=end. 한 기간이 {max_days}일을 넘지 않게 한다.
 
-def route_rules(question, today):
-    """규칙만으로 라우팅. LLM 호출 없음, 공짜."""
-    return {
-        "app": find_app(question),
-        "hour": find_hour(question),
-        "date": find_date(question, today),
-    }
+intent: 답을 만드는 방식을 고른다. periods가 비어 있으면 무조건 검색이다.
+    periods가 있어도 아래 기준으로 넷 중 하나를 고른다:
+    검색 — 기간이 있든 없든, "찾아봐", "무슨 얘기 했어", "~에 대해 뭐라고
+        했어"처럼 기간 전체가 아니라 **그 안의 특정 내용/대화/키워드**를
+        찾아야 하는 질문. "이번 주에 카톡에서 약속 잡은 거 찾아봐"는 그
+        주에 있었던 일 전체가 아니라 "약속" 관련 대화만 원하는 것이므로
+        periods가 있어도 검색이다.
 
-
-LLM_PROMPT = """질문을 읽고 화면 기록 검색 필터를 뽑아라.
-
-세 필드 다 같은 규칙이다 — 질문에 그 정보가 실제로 언급됐을 때만 채우고,
-없으면 추측하지 말고 null로 둔다.
-
-app: 특정 앱이나 앱 종류(에디터, 메신저, 화상회의 등)를 가리킬 때만.
-    "~에 대해 뭘 찾아봤어"처럼 내용만 묻는 질문은 null.
-hour: "오후 3시"처럼 시각이 실제로 언급됐을 때만 (한국 시간, 0~23). "무슨 명령을
-    실행했어?"처럼 시각 언급이 없으면 null. 오늘 몇 시인지와는 무관하다.
-date: "어제", "오늘", "7월 24일"처럼 날짜가 실제로 언급됐을 때만 ("YYYY-MM-DD",
-    오늘은 {today}). 날짜 언급이 없는 질문에 오늘 날짜를 채우지 않는다.
+        
+    정리 — 기간 안에 있었던 일 전반을 그대로 보여주면 되는 질문
+        ("~정리해줘", "~뭐 했어" 같이 특정 주제로 좁히지 않는 경우)
+    비교 — 기간 사이의 차이나 경향, "언제가/며칠이 제일 ~했는지"처럼 날짜를
+        가로질러 판단해야 하는 질문 (기간이 여러 개면 보통 이거다)
+    집계 — "몇 번 켰어", "얼마나 자주 썼어"처럼 사용 횟수를 세면 끝나는 질문.
+        "제일"이 있어도 세는 대상이 "며칠"이 아니라 "앱/행동의 횟수"일 때만
+        집계다. "언제가 제일 바빴어"는 날짜를 비교하는 것이므로 비교다.
 
 질문: {question}"""
 
 
-# app을 이 스키마의 enum으로 강제한다. LLM이 코퍼스에 없는 앱 이름을 "지어내는" 것
-# 자체가 API 레벨에서 불가능해진다 — 응답을 받은 뒤 골라내는 게 아니라, 애초에
-# 이 8개 중 하나 또는 null만 낼 수 있게 막는다.
+
+
+
+
+
 def _route_schema():
+    # app/site는 "anyOf: [값 있는 타입, null]" 형태로 nullable을 표현한다.
+    # {"type": ["string", "null"], "enum": [...]}처럼 enum과 유니언 타입을
+    # 섞으면 게이트웨이(OpenAI 호환)는 받아주지만 Anthropic의 구조화 출력은
+    # 스키마 자체를 거부한다 — anyOf가 둘 다 되는 더 이식성 있는 형태다.
+    #
+    # hour 범위(0~23)는 minimum/maximum으로 스키마에 강제하고 싶었지만
+    # Anthropic 구조화 출력이 integer에 그 키워드를 지원하지 않아서 뺐다.
+    # 대신 route()에서 파싱 후 범위를 직접 검증한다.
+    nullable_int = {"anyOf": [{"type": "integer"}, {"type": "null"}]}
     return {
         "type": "object",
         "properties": {
-            "app": {"type": ["string", "null"], "enum": [*APP_ALIASES.keys(), None]},
-            "hour": {"type": ["integer", "null"], "minimum": 0, "maximum": 23},
-            "date": {"type": ["string", "null"]},
+            "app": {"anyOf": [{"type": "string", "enum": [*APP_ALIASES.keys()]}, {"type": "null"}]},
+            "site": {"anyOf": [{"type": "string", "enum": [*SITE_ALIASES.keys()]}, {"type": "null"}]},
+            "hour_range": {
+                "type": "object",
+                "properties": {"start": nullable_int, "end": nullable_int},
+                "required": ["start", "end"],
+                "additionalProperties": False,
+            },
+            "periods": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "start": {"type": "string"},
+                        "end": {"type": "string"},
+                    },
+                    "required": ["label", "start", "end"],
+                    "additionalProperties": False,
+                },
+            },
+            "intent": {"type": "string", "enum": ["검색", "정리", "비교", "집계"]},
         },
-        "required": ["app", "hour", "date"],
+        "required": ["app", "site", "hour_range", "periods", "intent"],
         "additionalProperties": False,
     }
 
 
-def route_llm(question, today):
-    """규칙이 못 잡은 표현을 LLM에게 맡긴다. ("화상회의 앱에서", "그 채팅 앱" 등)
+def _expand_period(start, end):
+    """start~end(포함, YYYY-MM-DD) -> 날짜 문자열 리스트.
 
-    response_format으로 스키마를 강제한다(structured output). app이 enum이라
-    코퍼스에 없는 앱을 지어낼 수 없고, hour도 0~23 범위 밖으로 못 나온다 —
-    응답을 받은 뒤 방어적으로 걸러내던 걸 API가 애초에 막아준다.
-    date는 형식까지는 스키마로 강제 못 해서 최소한의 확인만 남겨둔다.
+    LLM이 순서를 뒤집거나(end < start) 너무 긴 기간을 낼 수 있어서, 여기서
+    최종 방어선으로 뒤집기 교정과 MAX_RANGE_DAYS 상한을 건다.
     """
-    client = OpenAI(base_url=BASE_URL, api_key=os.environ["OPENAI_API_KEY"])
-    prompt = LLM_PROMPT.format(today=today.strftime("%Y-%m-%d"), question=question)
+    start_d = datetime.strptime(start, "%Y-%m-%d").date()
+    end_d = datetime.strptime(end, "%Y-%m-%d").date()
+    if end_d < start_d:
+        start_d, end_d = end_d, start_d
+    n_days = min((end_d - start_d).days + 1, MAX_RANGE_DAYS)
+    return [(start_d + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(n_days)]
+
+
+def _parse_hour_range(raw):
+    """{"start", "end"} -> (hour_start, hour_end) 검증된 정수 쌍, 또는 (None, None).
+
+    시각이 하나만 언급된 질문("1시")은 start==end로 오므로 별도 케이스가
+    필요 없다. 값이 범위(0~23) 밖이거나 타입이 이상하면 통째로 버린다 —
+    절반만 정상인 범위(예: start만 유효)를 억지로 쓰면 의도와 다른 필터가
+    걸릴 수 있어서다.
+    """
+    if not isinstance(raw, dict):
+        return None, None
+    start, end = raw.get("start"), raw.get("end")
+    if not isinstance(start, int) or not isinstance(end, int):
+        return None, None
+    if not (0 <= start <= 23 and 0 <= end <= 23):
+        return None, None
+    if end < start:
+        start, end = end, start
+    return start, end
+
+
+def route(question, today=None):
+    """질문 -> {app, site, hour_start, hour_end, periods, intent} 딕셔너리.
+
+    periods: [{"label", "dates": [...]}, ...]. 기간 언급이 없는 질문은
+    빈 리스트다 — 그 경우 ask.py는 전체 기록에서 검색한다. 하루짜리
+    질문도 그냥 기간 1개(날짜 1개)로 표현한다. "하루면 date, 여러 날이면
+    periods"처럼 표현을 나누지 않는 이유는, 그 이중 표현 자체가 이후
+    단계들이 매번 두 필드를 다 확인해야 하는 복잡도였기 때문이다.
+
+    today를 안 주면 실행 시점의 오늘 날짜를 쓴다. 테스트할 때는 특정
+    날짜를 고정해서 넣을 수 있게 인자로 남겨뒀다.
+    """
+    if today is None:
+        today = datetime.now(LOCAL_TZ)
+
+    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
+    prompt = ROUTE_PROMPT.format(
+        today=today.strftime("%Y-%m-%d"), app_hint=_APP_HINT, site_hint=_SITE_HINT,
+        max_days=MAX_RANGE_DAYS, question=question,
+    )
     response = client.chat.completions.create(
         model=CHAT_MODEL,
         temperature=0,
@@ -223,74 +215,30 @@ def route_llm(question, today):
     try:
         parsed = json.loads(response.choices[0].message.content)
     except json.JSONDecodeError:
-        return {"app": None, "hour": None, "date": None}
+        parsed = {"app": None, "site": None, "hour_range": None, "periods": [], "intent": "검색"}
 
-    date = parsed.get("date")
-    if not isinstance(date, str):
-        date = None
+    hour_start, hour_end = _parse_hour_range(parsed.get("hour_range"))
 
-    return {"app": parsed.get("app"), "hour": parsed.get("hour"), "date": date}
+    periods = []
+    for p in parsed.get("periods") or []:
+        try:
+            dates = _expand_period(p["start"], p["end"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        periods.append({"label": p.get("label") or "", "dates": dates})
 
-    return {"app": app, "hour": hour, "date": date}
+    intent = parsed.get("intent")
+    if intent not in ("검색", "정리", "비교", "집계"):
+        intent = "검색"
 
-
-def _has_filter(plan):
-    """규칙이 뭐라도 잡았나. 셋 다 None이면 규칙이 한 일이 없다는 뜻이다."""
-    return plan["app"] is not None or plan["hour"] is not None or plan["date"] is not None
-
-
-# route()가 규칙으로 끝났는지 LLM까지 갔는지 센다. LLM 라우팅이 실제로 얼마나
-# 자주 발동하는지는 짐작이 아니라 재봐야 안다 — 매번 부르면 비용이 늘고,
-# 안 부르면 사전에 없는 표현을 놓친다.
-_stats = {"rules": 0, "llm": 0}
-
-
-def get_stats():
-    """지금까지 route()가 규칙으로 끝난 횟수 / LLM까지 간 횟수."""
-    return dict(_stats)
-
-
-def reset_stats():
-    _stats["rules"] = 0
-    _stats["llm"] = 0
-
-
-def route(question, mode="hybrid", today=None):
-    """질문 -> {app, hour, date, dates, intent} 딕셔너리.
-
-    mode:
-        rules   규칙만. 공짜, 즉시. 사전에 없는 표현은 못 잡는다.
-        llm     LLM만. 유연하지만 호출마다 비용이 든다.
-        hybrid  규칙 먼저, 아무것도 못 잡았을 때만 LLM (기본).
-
-    today를 안 주면 실행 시점의 오늘 날짜를 쓴다. 테스트할 때는 특정
-    날짜를 고정해서 넣을 수 있게 인자로 남겨뒀다.
-
-    dates/intent는 app/hour/date와 별개로 항상 규칙만으로 계산한다. 날짜
-    범위를 LLM에게 맡길 정도로 애매한 표현은 아직 다루지 않기 때문이다.
-    """
-    if today is None:
-        today = datetime.now(LOCAL_TZ)
-
-    if mode == "rules":
-        _stats["rules"] += 1
-        plan = route_rules(question, today)
-    elif mode == "llm":
-        _stats["llm"] += 1
-        plan = route_llm(question, today)
-    else:
-        # hybrid
-        plan = route_rules(question, today)
-        if _has_filter(plan):
-            _stats["rules"] += 1
-        else:
-            _stats["llm"] += 1
-            plan = route_llm(question, today)
-
-    dates = find_date_range(question, today)
-    plan["dates"] = dates
-    plan["intent"] = classify_range_question(question) if dates else None
-    return plan
+    return {
+        "app": parsed.get("app"),
+        "site": parsed.get("site"),
+        "hour_start": hour_start,
+        "hour_end": hour_end,
+        "periods": periods,
+        "intent": intent,
+    }
 
 
 if __name__ == "__main__":
@@ -301,14 +249,16 @@ if __name__ == "__main__":
         "어제 뭐 했어?",
         "7월 24일에 무슨 작업했어?",
         "오후 3시에 뭐 하고 있었어?",
+        "2시부터 4시까지 뭐 했어?",
         "오늘 하루 뭐 했는지 정리해줘",
         "이번 주에 주로 무슨 일을 했어?",
         "이번 주에 카카오톡을 몇 번 켰어?",
         "이번 주 언제가 제일 바빴어?",
+        "저번주 정리 그리고 이번주와 비교",
     ]
     for q in questions:
         plan = route(q)
-        dates = f"{len(plan['dates'])}일" if plan["dates"] else "-"
-        print(f"app={str(plan['app']):15} hour={str(plan['hour']):5} "
-              f"date={str(plan['date']):12} dates={dates:5} "
-              f"intent={str(plan['intent']):5} | {q}")
+        periods = ", ".join(f"{p['label']}({len(p['dates'])}일)" for p in plan["periods"])
+        hour = f"{plan['hour_start']}-{plan['hour_end']}" if plan["hour_start"] is not None else "-"
+        print(f"app={str(plan['app']):15} hour={hour:6} "
+              f"intent={str(plan['intent']):5} periods=[{periods}] | {q}")
