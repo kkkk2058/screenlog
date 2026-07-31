@@ -7,10 +7,17 @@
 import hashlib
 
 import chromadb
+import torch
 from sentence_transformers import SentenceTransformer
 
 from screenlog.clean import to_events
-from screenlog.config import CHROMA_DIR, COLLECTION, EMBED_BATCH_SIZE, EMBEDDING_MODEL
+from screenlog.config import (
+    CHROMA_DIR,
+    COLLECTION,
+    EMBED_BATCH_SIZE,
+    EMBEDDING_MODEL,
+    INDEX_CHECKPOINT_SIZE,
+)
 from screenlog.source import available_dates, load_frames
 
 _model = None
@@ -33,6 +40,11 @@ def embed(texts):
         batch_size=EMBED_BATCH_SIZE,   # 기본값 32로 두면 MPS 메모리가 터진다
         show_progress_bar=True,
     )
+    # MPS 캐싱 할당자는 텍스트 길이가 배치마다 들쭉날쭉하면(100~36,870자) 그때마다
+    # 새 크기의 메모리 블록을 캐시에 쌓기만 하고 반납하지 않는다. 안 비우면
+    # 하루치를 다 돌기 전에 시스템 메모리를 다 먹어버린다(실측: 15GB까지 증가).
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
     return vectors.tolist()            # chroma는 numpy가 아니라 리스트를 받는다
 
 
@@ -66,7 +78,13 @@ def indexed_dates():
 
 
 def index_date(date):
-    """하루치를 색인한다."""
+    """하루치를 색인한다.
+
+    청크(INDEX_CHECKPOINT_SIZE개)씩 임베딩하고 그때그때 저장한다.
+    중간에 죽어도 이미 저장된 청크는 남고, 재실행하면 그 뒤부터
+    이어서 한다 — id가 이벤트 내용으로 정해지므로 이미 들어간
+    id는 다시 물어보고 건너뛴다.
+    """
     events = to_events(load_frames(date))
     if not events:
         print(f"[{date}] 이벤트 없음")
@@ -79,25 +97,33 @@ def index_date(date):
         unique[event_id(event)] = event
 
     ids = list(unique.keys())
-    texts = []
-    metas = []
-    for event in unique.values():
-        texts.append(event["text"])
-        metas.append({k: v for k, v in event.items() if k != "text"})
-
-    print(f"[{date}] 이벤트 {len(ids)}개 임베딩 시작")
-    vectors = embed(texts)
-
     col = get_collection()
-    # chroma는 한 번에 5000개 남짓까지만 받는다. 넘으면 나눠 넣는다.
-    step = 5000
-    for i in range(0, len(ids), step):
-        col.upsert(
-            ids=ids[i:i + step],
-            embeddings=vectors[i:i + step],
-            documents=texts[i:i + step],
-            metadatas=metas[i:i + step],
-        )
+
+    # 이미 저장된 id는 이어서 할 때 다시 임베딩하지 않도록 건너뛴다.
+    done = set()
+    if col.count() > 0:
+        done = set(col.get(ids=ids, include=[])["ids"])
+    pending = [i for i in ids if i not in done]
+
+    if not pending:
+        print(f"[{date}] 이미 전부 색인됨 ({len(ids)}개)")
+        return
+    if done:
+        print(f"[{date}] 이어서 진행: {len(done)}개 완료, {len(pending)}개 남음")
+    else:
+        print(f"[{date}] 이벤트 {len(pending)}개 임베딩 시작")
+
+    step = INDEX_CHECKPOINT_SIZE
+    for i in range(0, len(pending), step):
+        chunk_ids = pending[i:i + step]
+        chunk_events = [unique[cid] for cid in chunk_ids]
+        texts = [event["text"] for event in chunk_events]
+        metas = [{k: v for k, v in event.items() if k != "text"} for event in chunk_events]
+
+        vectors = embed(texts)
+        col.upsert(ids=chunk_ids, embeddings=vectors, documents=texts, metadatas=metas)
+        print(f"[{date}] {min(i + step, len(pending))}/{len(pending)} 저장 (누적 {col.count()}개)")
+
     print(f"[{date}] 저장 완료 (전체 {col.count()}개)")
 
 
