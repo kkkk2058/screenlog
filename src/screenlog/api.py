@@ -16,19 +16,25 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from screenlog.ask import ask_auto
+from screenlog.config import AI_APPS
 from screenlog.stats import build_stats, build_timeline
 
 app = FastAPI(title="screenlog")
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-EXCERPT = 200   # 근거 본문은 이만큼만 내보낸다
+# 팀원용 녹화 프로그램(.dmg) 배포 페이지. 여기서 받아야 실제 브라우저
+# 다운로드로 격리(quarantine) 속성이 붙어서, Gatekeeper 경고까지 포함한
+# 진짜 최초 설치 경험을 그대로 재현한다.
+DOWNLOAD_DIR = Path(__file__).parent.parent.parent / "distribution" / "mac"
+if DOWNLOAD_DIR.exists():
+    app.mount("/download", StaticFiles(directory=DOWNLOAD_DIR, html=True), name="download")
 
-# 화면에 AI 생성 텍스트가 뜨는 앱들. 이 앱 화면이 근거로 잡히면 UI에 경고를 단다.
-AI_APPS = {"Claude", "Code"}
+EXCERPT = 200   # 근거 본문은 이만큼만 내보낸다
 
 
 class AskRequest(BaseModel):
