@@ -17,7 +17,7 @@ load_dotenv()
 # screenpipe가 쓰는 DB를 읽기 전용으로 그대로 읽는다. jsonl 사본을 만들지 않는다.
 # 사본을 두면 "원본이 자랐는데 사본은 안 자란" 상태가 생기고,
 # 그때부터 실험 결과가 어느 시점 데이터인지 알 수 없게 된다.
-SCREENPIPE_DB = Path.home() / ".screenpipe" / "db.sqlite"
+SCREENPIPE_DB = Path.home() / ".screenpipe-redacted" / "db.sqlite"
 
 # --- 정제 -------------------------------------------------------------
 MIN_EVENT_CHARS = 100    # 이보다 짧은 이벤트는 버린다. 알맹이가 없다.
