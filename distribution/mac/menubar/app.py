@@ -37,7 +37,7 @@ def log(msg: str):
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(APP_LOG_PATH, "a") as f:
+    with open(APP_LOG_PATH, "a", encoding="utf-8") as f:
         f.write(f"[{ts}] {msg}\n")
 
 
@@ -91,6 +91,21 @@ RECORDER_ENV = {
     **os.environ,
     "PATH": f"{Path.home()}/.local/bin:/opt/homebrew/bin:/usr/local/bin:"
             + os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+    # Finder에서 띄운 GUI 앱은 터미널과 달리 로케일이 안 넘어와서 기본값이
+    # ASCII가 된다. 한글 섞인 출력(색인 로그 등)을 다루는 자식 프로세스가
+    # 이걸로 죽는 걸 막는다.
+    "LANG": "en_US.UTF-8",
+    "LC_ALL": "en_US.UTF-8",
+}
+
+# py2app으로 얼린 이 앱 자신의 PYTHONHOME/PYTHONPATH가 os.environ에 박혀
+# 있어서, RECORDER_ENV를 그대로 물려주면 `uv run python`으로 띄운 색인
+# 프로세스가 이 앱 내부의 제한된 파이썬 표준 라이브러리를 잘못 참조해서
+# 죽는다(실측: ModuleNotFoundError: zoneinfo). uv/색인/rsync처럼 이 앱과
+# 무관한 별도 파이썬 프로세스를 띄울 땐 이 오염된 변수를 빼고 넘긴다.
+SYNC_ENV = {
+    k: v for k, v in RECORDER_ENV.items()
+    if k not in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "RESOURCEPATH")
 }
 
 
@@ -199,11 +214,24 @@ class ScreenlogMenuBar(rumps.App):
             self.start_recording()
 
     def sync_now(self, _):
-        self.sync_item.title = "동기화 중... (색인)"
-        self.syncing = True
-        self.title = "⟳"
-        log("동기화 시작 (버튼 클릭됨)")
-        threading.Thread(target=self._sync_worker, daemon=True).start()
+        try:
+            self.sync_item.title = "동기화 중... (색인)"
+            self.syncing = True
+            self.title = "⟳"
+            log("동기화 시작 (버튼 클릭됨)")
+            threading.Thread(target=self._sync_worker, daemon=True).start()
+        except Exception:
+            import traceback
+            tb = traceback.format_exc()
+            try:
+                with open(DATA_DIR / "menubar-crash.log", "a", encoding="utf-8") as f:
+                    f.write(tb + "\n")
+            except Exception:
+                pass
+            rumps.alert("동기화 시작 실패", tb[-800:])
+            self.sync_item.title = "지금 동기화 (색인 + 서버 전송)"
+            self.syncing = False
+            self.refresh(None)
 
     def _sync_worker(self):
         try:
@@ -222,8 +250,8 @@ class ScreenlogMenuBar(rumps.App):
             log(f"색인 시작: {' '.join(index_cmd)} (cwd={SCREENLOG_DIR})")
             try:
                 result = subprocess.run(
-                    index_cmd, cwd=str(SCREENLOG_DIR), env=RECORDER_ENV,
-                    capture_output=True, text=True,
+                    index_cmd, cwd=str(SCREENLOG_DIR), env=SYNC_ENV,
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
                 )
             except FileNotFoundError as e:
                 log(f"색인 실패(명령어 못 찾음): {e}")
@@ -241,7 +269,10 @@ class ScreenlogMenuBar(rumps.App):
                 f"{SCREENLOG_DIR}/chroma/", f"{EC2_USER}@{EC2_HOST}:~/screenlog/chroma/",
             ]
             log(f"서버 전송 시작: {' '.join(rsync_cmd)}")
-            result = subprocess.run(rsync_cmd, env=RECORDER_ENV, capture_output=True, text=True)
+            result = subprocess.run(
+                rsync_cmd, env=SYNC_ENV, capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            )
             if result.returncode != 0:
                 log(f"서버 전송 실패(returncode={result.returncode}): {result.stderr[-1000:]}")
                 rumps.notification("Screenlog", "서버 전송 실패", result.stderr[-200:] or "알 수 없는 오류")
