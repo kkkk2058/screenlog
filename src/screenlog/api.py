@@ -46,6 +46,11 @@ def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/dashboard")
+def dashboard():
+    return FileResponse(STATIC_DIR / "dashboard.html")
+
+
 @app.get("/api/stats")
 def api_stats():
     """대시보드용 집계. 본문 없이 숫자와 앱 이름만 나간다."""
