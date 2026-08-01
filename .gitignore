@@ -19,3 +19,6 @@ eval/runs/
 
 # 로컬 도구 설정
 .claude/
+distribution/mac/menubar/.venv/
+distribution/mac/menubar/build/
+distribution/mac/menubar/dist/
