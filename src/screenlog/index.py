@@ -5,6 +5,7 @@
 """
 
 import hashlib
+import time
 
 import chromadb
 import torch
@@ -48,14 +49,22 @@ def embed(texts):
     return vectors.tolist()            # chroma는 numpy가 아니라 리스트를 받는다
 
 
+_collection = None
+
+
 def get_collection():
-    client = chromadb.PersistentClient(path=CHROMA_DIR)
-    # 임베딩을 우리가 직접 만들어 넣으므로 chroma 기본 임베딩 함수는 끈다.
-    return client.get_or_create_collection(
-        COLLECTION,
-        metadata={"hnsw:space": "cosine"},
-        embedding_function=None,
-    )
+    """chroma 클라이언트도 모델처럼 한 번만 연다. PersistentClient를 매번 새로
+    열면 db.sqlite가 커질수록(현재 900MB대) 연결에만 수 초가 걸린다."""
+    global _collection
+    if _collection is None:
+        client = chromadb.PersistentClient(path=CHROMA_DIR)
+        # 임베딩을 우리가 직접 만들어 넣으므로 chroma 기본 임베딩 함수는 끈다.
+        _collection = client.get_or_create_collection(
+            COLLECTION,
+            metadata={"hnsw:space": "cosine"},
+            embedding_function=None,
+        )
+    return _collection
 
 
 def event_id(event):
@@ -85,6 +94,7 @@ def index_date(date):
     이어서 한다 — id가 이벤트 내용으로 정해지므로 이미 들어간
     id는 다시 물어보고 건너뛴다.
     """
+    started = time.monotonic()
     events = to_events(load_frames(date))
     if not events:
         print(f"[{date}] 이벤트 없음")
@@ -124,7 +134,10 @@ def index_date(date):
         col.upsert(ids=chunk_ids, embeddings=vectors, documents=texts, metadatas=metas)
         print(f"[{date}] {min(i + step, len(pending))}/{len(pending)} 저장 (누적 {col.count()}개)")
 
-    print(f"[{date}] 저장 완료 (전체 {col.count()}개)")
+    elapsed = time.monotonic() - started
+    chars = sum(len(unique[cid]["text"]) for cid in pending)
+    print(f"[{date}] 저장 완료 (전체 {col.count()}개, {elapsed:.1f}초, "
+          f"{chars:,}자, 1000자당 {elapsed / chars * 1000:.3f}초)")
 
 
 def index_all():

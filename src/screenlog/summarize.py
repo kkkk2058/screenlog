@@ -12,8 +12,16 @@ search()는 벡터 검색이라 "제일 비슷한 것 top-k"만 골라준다. �
 import asyncio
 from collections import Counter
 
-from screenlog.config import AI_APPS, API_KEY, BASE_URL, CHAT_MODEL, MAX_EVENTS_PER_DAY_SUMMARY
-from screenlog.index import get_collection
+from screenlog import summary_cache
+from screenlog.config import (
+    AI_APPS,
+    API_KEY,
+    BASE_URL,
+    CHAT_MODEL,
+    MAX_EVENTS_PER_DAY_SUMMARY,
+    SUMMARY_DETAIL_KEYWORDS,
+)
+from screenlog.index import get_collection, indexed_dates
 from screenlog.router import _format_history
 from screenlog.source import weekday_ko
 from openai import AsyncOpenAI
@@ -148,22 +156,57 @@ def _thin_out(events, max_events):
     return [events[int(i * step)] for i in range(max_events)]
 
 
+def _is_plain_day_request(app, hour_start, hour_end, site, history, question):
+    """"그 날 하루를 기본 분량으로 요약" 요청인지 — 캐시를 쓸 수 있는 조건.
+
+    캐시에 들어 있는 건 필터 없이 기본 분량으로 만든 요약 하나뿐이라, 조건이
+    조금이라도 다르면(앱/시각/사이트 필터, 이전 대화 참고, "자세히" 같은 분량
+    요청) 캐시를 쓰면 안 된다. 애매하면 캐시를 안 쓰는 쪽으로 판단한다 —
+    조금 느린 건 티가 안 나지만 엉뚱한 답은 바로 티가 난다.
+    """
+    if app or site or hour_start is not None or hour_end is not None:
+        return False
+    if history:
+        return False
+    if question and any(k in question for k in SUMMARY_DETAIL_KEYWORDS):
+        return False
+    return True
+
+
 async def summarize_day(date, app=None, hour_start=None, hour_end=None, site=None, history=None, question=None):
     """하루치를 조회해서 요약한다. history는 멀티턴 컨텍스트, question은 사용자가
     실제로 뭐라고 물었는지("쉽게"/"자세히" 등) — 요약 분량/난이도를 여기 맞춘다.
+
+    필터 없는 기본 요약이고 지난 날이면 캐시를 먼저 본다. 캐시가 맞으면
+    browse()까지 통째로 건너뛴다 — browse()는 동기 호출이라 여러 날을
+    asyncio.gather로 묶어도 이벤트 루프를 막아 순차로 도는데(실측: 하루당
+    0.3~0.8초), 캐시 적중이면 그 비용도 같이 사라진다.
     """
     weekday = weekday_ko(date)
+    plain = _is_plain_day_request(app, hour_start, hour_end, site, history, question)
+    if plain:
+        cached = summary_cache.get(date, CHAT_MODEL)
+        if cached is not None:
+            return cached
+
     events = browse(date, app, hour_start, hour_end, site)
     if not events:
+        # 기록 없는 날은 캐시하지 않는다. 나중에 그 날을 뒤늦게 색인하면
+        # "기록 없음"이 그대로 남아 영영 안 고쳐지는데, browse()가 빈 날엔
+        # 어차피 금방 끝나서 아낄 것도 없다.
         return f"[{date}({weekday})] 기록 없음"
 
+    raw_count = len(events)
     events = _thin_out(events, MAX_EVENTS_PER_DAY_SUMMARY)
     context = _format_events(events)
     scope = f"{hour_start}시~{hour_end}시" if hour_start is not None else "하루"
     summary = await _call_llm(DAY_SUMMARY_PROMPT.format(date=date, weekday=weekday, scope=scope,
                                                           history=_format_history(history), context=context,
                                                           question=question or "정리해줘"))
-    return f"[{date}({weekday})]\n{summary}"
+    result = f"[{date}({weekday})]\n{summary}"
+    if plain:
+        summary_cache.put(date, result, raw_count, CHAT_MODEL)
+    return result
 
 
 async def summarize_range(dates, app=None, hour_start=None, hour_end=None, site=None, history=None, question=None):
@@ -254,3 +297,49 @@ def format_count(counter, top_n=5):
     top_name, top_count = counter.most_common(1)[0]
     lines = [f"{name} {count}회" for name, count in counter.most_common(top_n)]
     return f"가장 많이 등장한 것은 {top_name}({top_count}회)입니다.\n\n" + "\n".join(lines)
+
+
+async def build_summary_cache(dates=None, concurrency=5):
+    """지난 날의 기본 요약을 미리 만들어 캐시에 채운다.
+
+    색인(index.py)과 분리해 둔 이유: 색인은 LLM 없이 임베딩만 하는 단계라
+    API 키도 네트워크도 필요 없다. 여기서 색인 안에 LLM 호출을 끼워 넣으면
+    게이트웨이가 죽었을 때 색인까지 같이 실패한다. 순서상 색인 뒤에 돌리되,
+    실패해도 색인 결과는 남도록 별도 명령으로 둔다.
+
+    concurrency로 동시 호출 수를 묶는다 — 13일치를 한꺼번에 던지면
+    레이트리밋에 걸린다.
+    """
+    if dates is None:
+        dates = sorted(indexed_dates())
+
+    done = summary_cache.cached_dates(CHAT_MODEL)
+    todo = [d for d in dates if summary_cache.is_cacheable_day(d) and d not in done]
+    if not todo:
+        print(f"만들 요약 없음 (이미 {len(done)}일치 캐시됨, model={CHAT_MODEL})")
+        return []
+
+    print(f"요약 생성 {len(todo)}일 ({todo[0]} ~ {todo[-1]}), model={CHAT_MODEL}")
+    sem = asyncio.Semaphore(concurrency)
+
+    async def one(date):
+        async with sem:
+            await summarize_day(date)   # 캐시 저장은 summarize_day가 알아서 한다
+            print(f"  [{date}] 완료")
+            return date
+
+    return list(await asyncio.gather(*[one(d) for d in todo]))
+
+
+if __name__ == "__main__":
+    # uv run python -m screenlog.summarize          아직 없는 날짜만 만든다
+    # uv run python -m screenlog.summarize --stats  캐시 상태만 본다
+    import sys
+
+    if "--stats" in sys.argv:
+        total, by_model = summary_cache.stats()
+        print(f"캐시된 하루 요약: {total}일")
+        for model, n in by_model:
+            print(f"  {model}: {n}일")
+    else:
+        asyncio.run(build_summary_cache())

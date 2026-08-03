@@ -56,10 +56,10 @@ def ensure_accessibility_permission():
 # 동기화(색인 + EC2 전송) 대상. 팀원 배포판에서는 이 값들을 설정 파일로
 # 빼야 하지만, 지금은 개인 사용 기준으로 고정값을 쓴다.
 SCREENLOG_DIR = Path.home() / "screenlog"
-EC2_HOST = "15.164.242.189"
+EC2_HOST = "43.203.145.162"
 EC2_USER = "ubuntu"
 EC2_KEY = Path.home() / "Downloads/EXPRESS-BEC.pem"
-DASHBOARD_URL = "http://15.164.242.189:8000"
+DASHBOARD_URL = "http://43.203.145.162:8000"
 UV_BIN = Path.home() / ".local/bin/uv"
 
 
@@ -82,9 +82,6 @@ RECORDER_BIN = resource_path("screenpipe-bin")
 RECORDER_ARGS = [
     str(RECORDER_BIN), "record",
     "--data-dir", str(DATA_DIR),
-    "--async-pii-redaction",
-    "--pii-redaction-labels", "secret,email,phone,person,address",
-    "--pii-backend", "local",
 ]
 
 RECORDER_ENV = {
@@ -262,6 +259,25 @@ class ScreenlogMenuBar(rumps.App):
                 rumps.notification("Screenlog", "색인 실패", result.stderr[-200:] or "알 수 없는 오류")
                 return
             log(f"색인 완료: {result.stdout[-500:]}")
+
+            # 요약 캐시는 chroma/ 안(summary_cache.sqlite)에 만들어지므로 rsync보다
+            # 먼저 돌려야 서버로 같이 넘어간다. 실패해도(게이트웨이 다운 등) 색인
+            # 결과 자체는 살려서 보내야 하므로 여기서 return하지 않고 넘어간다 —
+            # 요약이 없으면 그냥 그때그때 만드는 예전 방식으로 자동 대체된다.
+            self.sync_item.title = "동기화 중... (요약 생성)"
+            summarize_cmd = [str(UV_BIN), "run", "python", "-m", "screenlog.summarize"]
+            log(f"요약 생성 시작: {' '.join(summarize_cmd)} (cwd={SCREENLOG_DIR})")
+            try:
+                result = subprocess.run(
+                    summarize_cmd, cwd=str(SCREENLOG_DIR), env=SYNC_ENV,
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                )
+                if result.returncode != 0:
+                    log(f"요약 생성 실패(returncode={result.returncode}), 계속 진행: {result.stderr[-500:]}")
+                else:
+                    log(f"요약 생성 완료: {result.stdout[-500:]}")
+            except FileNotFoundError as e:
+                log(f"요약 생성 실패(명령어 못 찾음), 계속 진행: {e}")
 
             self.sync_item.title = "동기화 중... (서버 전송)"
             rsync_cmd = [
