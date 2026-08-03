@@ -59,6 +59,9 @@ _SITE_HINT = "\n".join(f"    {site}: {'/'.join(aliases)}" for site, aliases in S
 
 
 ROUTE_PROMPT = """질문을 읽고 화면 기록 조회 계획을 세워라. 오늘은 {today}이다.
+{history}
+현재 질문에 "그날"/"거기서"/"그거" 같은 지시어가 있으면, 위 이전 대화를 참고해서
+무엇을 가리키는지 판단한 뒤 아래 필드를 채운다. 이전 대화가 없으면 이 문단은 무시한다.
 
 app: 특정 앱이나 앱 종류를 가리킬 때만 아래 후보 중 하나로 채운다. 없으면 null.
 {app_hint}
@@ -182,7 +185,19 @@ def _parse_hour_range(raw):
     return start, end
 
 
-async def route(question, today=None):
+def _format_history(history):
+    """[{"question", "answer"}, ...] -> 프롬프트에 끼워 넣을 텍스트.
+
+    history가 없으면 빈 문자열을 돌려줘서, 프롬프트에서 그 자리가 그냥
+    빈 줄로 남게 한다(멀티턴 아닌 기존 질문은 프롬프트가 그대로 유지됨).
+    """
+    if not history:
+        return ""
+    turns = "\n".join(f"Q: {h['question']}\nA: {h['answer']}" for h in history)
+    return f"\n이전 대화(참고용, 오래된 순):\n{turns}\n"
+
+
+async def route(question, today=None, history=None):
     """질문 -> {app, site, hour_start, hour_end, periods, intent} 딕셔너리.
 
     periods: [{"label", "dates": [...]}, ...]. 기간 언급이 없는 질문은
@@ -193,6 +208,9 @@ async def route(question, today=None):
 
     today를 안 주면 실행 시점의 오늘 날짜를 쓴다. 테스트할 때는 특정
     날짜를 고정해서 넣을 수 있게 인자로 남겨뒀다.
+
+    history: [{"question", "answer"}, ...] (최근 순 정렬은 호출부 책임).
+    "그날"/"그거" 같은 지시어를 이전 대화로 풀어내기 위한 멀티턴 컨텍스트.
     """
     if today is None:
         today = datetime.now(LOCAL_TZ)
@@ -200,7 +218,7 @@ async def route(question, today=None):
     client = AsyncOpenAI(base_url=BASE_URL, api_key=API_KEY)
     prompt = ROUTE_PROMPT.format(
         today=today.strftime("%Y-%m-%d"), app_hint=_APP_HINT, site_hint=_SITE_HINT,
-        max_days=MAX_RANGE_DAYS, question=question,
+        max_days=MAX_RANGE_DAYS, question=question, history=_format_history(history),
     )
     response = await client.chat.completions.create(
         model=CHAT_MODEL,
@@ -242,23 +260,28 @@ async def route(question, today=None):
 
 
 if __name__ == "__main__":
-    questions = [
-        "카카오톡에서 무슨 대화를 했어?",
-        "zoom 회의에서 뭘 했어?",
-        "VS Code에서 무슨 코드를 봤어?",
-        "어제 뭐 했어?",
-        "7월 24일에 무슨 작업했어?",
-        "오후 3시에 뭐 하고 있었어?",
-        "2시부터 4시까지 뭐 했어?",
-        "오늘 하루 뭐 했는지 정리해줘",
-        "이번 주에 주로 무슨 일을 했어?",
-        "이번 주에 카카오톡을 몇 번 켰어?",
-        "이번 주 언제가 제일 바빴어?",
-        "저번주 정리 그리고 이번주와 비교",
-    ]
-    for q in questions:
-        plan = route(q)
-        periods = ", ".join(f"{p['label']}({len(p['dates'])}일)" for p in plan["periods"])
-        hour = f"{plan['hour_start']}-{plan['hour_end']}" if plan["hour_start"] is not None else "-"
-        print(f"app={str(plan['app']):15} hour={hour:6} "
-              f"intent={str(plan['intent']):5} periods=[{periods}] | {q}")
+    import asyncio
+
+    async def main():
+        questions = [
+            "카카오톡에서 무슨 대화를 했어?",
+            "zoom 회의에서 뭘 했어?",
+            "VS Code에서 무슨 코드를 봤어?",
+            "어제 뭐 했어?",
+            "7월 24일에 무슨 작업했어?",
+            "오후 3시에 뭐 하고 있었어?",
+            "2시부터 4시까지 뭐 했어?",
+            "오늘 하루 뭐 했는지 정리해줘",
+            "이번 주에 주로 무슨 일을 했어?",
+            "이번 주에 카카오톡을 몇 번 켰어?",
+            "이번 주 언제가 제일 바빴어?",
+            "저번주 정리 그리고 이번주와 비교",
+        ]
+        for q in questions:
+            plan = await route(q)
+            periods = ", ".join(f"{p['label']}({len(p['dates'])}일)" for p in plan["periods"])
+            hour = f"{plan['hour_start']}-{plan['hour_end']}" if plan["hour_start"] is not None else "-"
+            print(f"app={str(plan['app']):15} hour={hour:6} "
+                  f"intent={str(plan['intent']):5} periods=[{periods}] | {q}")
+
+    asyncio.run(main())

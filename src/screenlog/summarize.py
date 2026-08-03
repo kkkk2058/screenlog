@@ -14,24 +14,33 @@ from collections import Counter
 
 from screenlog.config import AI_APPS, API_KEY, BASE_URL, CHAT_MODEL, MAX_EVENTS_PER_DAY_SUMMARY
 from screenlog.index import get_collection
+from screenlog.router import _format_history
 from screenlog.source import weekday_ko
 from openai import AsyncOpenAI
 
 
 DAY_SUMMARY_PROMPT = """아래는 사용자의 {date}({weekday}) {scope} 화면 사용 기록이다.
-
+{history}
 {context}
 
-이 시간에 있었던 일을 최대 5개 항목으로 요약하라. 규칙:
+질문: {question}
+
+위 기록을 질문의 요청 방식에 맞게 요약하라. 규칙:
 - 각 항목은 "* HH시MM분 - 내용" 형식으로, 한 줄에 하나씩 쓴다(번호 매기기나 줄글 금지).
 - 시각과 앱 이름을 항목 안에 함께 밝힌다.
 - 하루 전체를 본 것처럼("하루를 시작했습니다", "마지막으로" 등) 서술하지 말고,
   주어진 기록이 커버하는 시간 범위 안에서만 서술한다.
+- 항목 개수와 문장 난이도는 질문에 맞춘다. 질문에 특별한 요청이 없으면 5개
+  안팎으로 쓴다. "쉽게"/"간단히"가 있으면 항목을 줄이고 쉬운 말로 쓰고,
+  "자세히"/"자세하게"가 있으면 항목을 더 쪼개서 촘촘하게 쓴다 — "최대 5개"에
+  얽매이지 않는다.
 - 기록이 비어 있으면 "기록 없음"이라고만 답한다.
+- 이전 대화가 있고 현재 질문이 그 답변을 더 설명해달라는 것이면(예: "더 자세히"),
+  이전 대화도 참고해서 요약 분량/초점을 조정한다.
 """
 
 COMPARE_PROMPT = """아래는 사용자의 최근 활동을 날짜별로 미리 요약해둔 것이다.
-
+{history}
 {context}
 
 질문: {question}
@@ -39,10 +48,11 @@ COMPARE_PROMPT = """아래는 사용자의 최근 활동을 날짜별로 미리 
 규칙:
 - 날짜별 요약에 근거해서만 답한다.
 - 날짜를 밝히며 답한다.
+- 이전 대화가 있으면 참고해서 팔로우업 질문("더 자세히", "그거 무슨 뜻이야")에 답한다.
 """
 
 PERIOD_COMPARE_PROMPT = """아래는 서로 다른 기간의 활동을 기간별로 미리 요약해둔 것이다.
-
+{history}
 {context}
 
 질문: {question}
@@ -50,6 +60,7 @@ PERIOD_COMPARE_PROMPT = """아래는 서로 다른 기간의 활동을 기간별
 규칙:
 - 기간별 요약에 근거해서만 답한다.
 - 어느 기간 이야기인지 밝히며 답한다.
+- 이전 대화가 있으면 참고해서 팔로우업 질문("더 자세히", "그거 무슨 뜻이야")에 답한다.
 """
 
 SUMMARY_EXCERPT = 300   # 하루 요약 프롬프트엔 이벤트를 다 넣으니, 하나당 길이를 줄인다.
@@ -137,8 +148,10 @@ def _thin_out(events, max_events):
     return [events[int(i * step)] for i in range(max_events)]
 
 
-async def summarize_day(date, app=None, hour_start=None, hour_end=None, site=None):
-    """하루치를 조회해서 5문장 이내로 요약한다."""
+async def summarize_day(date, app=None, hour_start=None, hour_end=None, site=None, history=None, question=None):
+    """하루치를 조회해서 요약한다. history는 멀티턴 컨텍스트, question은 사용자가
+    실제로 뭐라고 물었는지("쉽게"/"자세히" 등) — 요약 분량/난이도를 여기 맞춘다.
+    """
     weekday = weekday_ko(date)
     events = browse(date, app, hour_start, hour_end, site)
     if not events:
@@ -147,11 +160,13 @@ async def summarize_day(date, app=None, hour_start=None, hour_end=None, site=Non
     events = _thin_out(events, MAX_EVENTS_PER_DAY_SUMMARY)
     context = _format_events(events)
     scope = f"{hour_start}시~{hour_end}시" if hour_start is not None else "하루"
-    summary = await _call_llm(DAY_SUMMARY_PROMPT.format(date=date, weekday=weekday, scope=scope, context=context))
+    summary = await _call_llm(DAY_SUMMARY_PROMPT.format(date=date, weekday=weekday, scope=scope,
+                                                          history=_format_history(history), context=context,
+                                                          question=question or "정리해줘"))
     return f"[{date}({weekday})]\n{summary}"
 
 
-async def summarize_range(dates, app=None, hour_start=None, hour_end=None, site=None):
+async def summarize_range(dates, app=None, hour_start=None, hour_end=None, site=None, history=None, question=None):
     """정리형 — 하루씩 요약해서 그대로 이어붙인다.
 
     2차 압축(비교형처럼 요약들을 또 요약)을 안 하는 이유는, "정리해줘"류
@@ -159,12 +174,13 @@ async def summarize_range(dates, app=None, hour_start=None, hour_end=None, site=
     """
     # asyncio.gather로 날짜별 요약을 "동시에" 날림
     days = await asyncio.gather(*[
-        summarize_day(date, app, hour_start, hour_end, site) for date in dates
+        summarize_day(date, app, hour_start, hour_end, site, history=history, question=question)
+        for date in dates
     ])
     return "\n\n".join(days)
 
 
-async def compare_range(question, dates, app=None, hour_start=None, hour_end=None, site=None):
+async def compare_range(question, dates, app=None, hour_start=None, hour_end=None, site=None, history=None):
     """비교형 — 하루 요약들을 다시 한번 LLM에 넣어 비교/판단시킨다.
 
     "언제가 제일 바빴어?"는 하루 요약을 그냥 늘어놔선 답이 안 나온다. LLM이
@@ -175,22 +191,23 @@ async def compare_range(question, dates, app=None, hour_start=None, hour_end=Non
     ])
 
     combined = "\n\n".join(days)
-    return await _call_llm(COMPARE_PROMPT.format(context=combined, question=question))
+    return await _call_llm(COMPARE_PROMPT.format(context=combined, question=question,
+                                                   history=_format_history(history)))
 
 
-async def summarize_period(period, app=None, hour_start=None, hour_end=None, site=None):
+async def summarize_period(period, app=None, hour_start=None, hour_end=None, site=None, history=None, question=None):
     """기간 하나(label + dates)를 정리형으로 요약하고 라벨을 붙인다.
 
     compare_periods()가 기간을 통째로 하나의 블록으로 다루려면, 그 안의
     날짜들을 먼저 이 함수로 뭉쳐야 한다.
     """
     body = await summarize_range(period["dates"], app=app, hour_start=hour_start,
-                            hour_end=hour_end, site=site)
+                            hour_end=hour_end, site=site, history=history, question=question)
     start, end = period["dates"][0], period["dates"][-1]
     return f"### {period['label']} ({start}({weekday_ko(start)}) ~ {end}({weekday_ko(end)}))\n{body}"
 
 
-async def compare_periods(question, periods, app=None, hour_start=None, hour_end=None, site=None):
+async def compare_periods(question, periods, app=None, hour_start=None, hour_end=None, site=None, history=None):
     """기간 자체가 여러 개 언급된 질문 — "저번주 정리하고 이번주랑 비교"류.
 
     compare_range()는 기간 하나 안에서 하루끼리 비교한다("이번 주 언제가
@@ -201,7 +218,8 @@ async def compare_periods(question, periods, app=None, hour_start=None, hour_end
     summarize_period(period, app, hour_start, hour_end, site) for period in periods
     ])
     combined = "\n\n".join(blocks)
-    return await _call_llm(PERIOD_COMPARE_PROMPT.format(context=combined, question=question))
+    return await _call_llm(PERIOD_COMPARE_PROMPT.format(context=combined, question=question,
+                                                          history=_format_history(history)))
 
 
 def count_range(dates, app=None, site=None, field="app"):

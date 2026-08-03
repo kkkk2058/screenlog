@@ -8,9 +8,10 @@
 합쳐두면 엉뚱한 걸 가져와도 그럴듯한 답이 나와서 눈치채지 못한다.
 """
 
+import asyncio
 from datetime import datetime
 
-from openai import AsyncOpenAI 
+from openai import AsyncOpenAI
 
 from screenlog.config import (
     AI_APPS,
@@ -22,7 +23,7 @@ from screenlog.config import (
     RETRIEVE_K,
 )
 from screenlog.index import embed, get_collection
-from screenlog.router import route
+from screenlog.router import _format_history, route
 from screenlog.source import LOCAL_TZ, weekday_ko
 from screenlog.summarize import (
     compare_periods,
@@ -40,7 +41,7 @@ PROMPT = """아래는 사용자의 컴퓨터 화면 사용 기록이다.
 아래 근거를 골라왔으니, 근거에 실제로 붙어있는 날짜/요일만 그대로 쓴다.
 그 결과 오늘 날짜와 안 맞아 보여도(예: "엊그제"인데 근거 날짜가 다르게
 느껴져도) 근거의 날짜가 맞다 — 재계산해서 다른 날짜를 답하지 않는다.
-
+{history}
 {context}
 
 질문: {question}
@@ -55,6 +56,8 @@ PROMPT = """아래는 사용자의 컴퓨터 화면 사용 기록이다.
   단어가 없어도(예: "1시"라는 글자가 없어도) 그 근거로 답한다. 관련
   근거가 하나도 없을 때만 "기록에 없습니다"라고 답한다.
 - 답할 때 근거에 적힌 캡처 시각과 앱 이름을 그대로 밝힌다.
+- 이전 대화가 있고 현재 질문이 그 답변 내용을 더 설명해달라는 것이면(예:
+  "더 자세히", "그거 무슨 뜻이야"), 이전 대화도 참고해서 답한다.
 """
 
 
@@ -148,15 +151,17 @@ def build_context(hits):
     return "\n\n".join(blocks)
 
 
-async def ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=None, dates=None):
+async def ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=None, dates=None,
+              history=None):
     """질문 -> (답변, 근거 목록).
 
-    app/hour_range/site/dates는 그대로 search()에 넘긴다.
+    app/hour_range/site/dates는 그대로 search()에 넘긴다. history는 멀티턴
+    컨텍스트("그날"/"더 자세히" 같은 팔로우업 해석용) — [{"question","answer"}, ...].
     """
     hits = search(question, k, app=app, hour_start=hour_start, hour_end=hour_end,
                   site=site, dates=dates)
     today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
-    prompt = PROMPT.format(today=today, weekday=weekday_ko(today),
+    prompt = PROMPT.format(today=today, weekday=weekday_ko(today), history=_format_history(history),
                             context=build_context(hits), question=question)
 
     client = AsyncOpenAI(base_url=BASE_URL, api_key=API_KEY)
@@ -170,13 +175,14 @@ async def ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, 
 
 
 
-async def stream_ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=None, dates=None):
+async def stream_ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=None, dates=None,
+                     history=None):
     hits = search(question, k, app=app, hour_start=hour_start, hour_end=hour_end,
                   site=site, dates=dates)
     yield {"type": "hits", "hits": hits}          # ← 메타데이터 먼저 한 번 던짐
 
     today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
-    prompt = PROMPT.format(today=today, weekday=weekday_ko(today),
+    prompt = PROMPT.format(today=today, weekday=weekday_ko(today), history=_format_history(history),
                             context=build_context(hits), question=question)
 
     client = AsyncOpenAI(base_url=BASE_URL, api_key=API_KEY)
@@ -195,7 +201,7 @@ async def stream_ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end
     yield {"type": "done"}                          # ← 스트림 끝났다는 신호
 
 
-async def stream_ask_auto(question, k=RETRIEVE_K):
+async def stream_ask_auto(question, k=RETRIEVE_K, history=None):
     """ask_auto()와 같은 라우팅/분기를 쓰되, 결과를 (답변, plan, hits) 튜플로 한 번에
     돌려주는 대신 plan/hits/token/done 이벤트로 쪼개서 yield한다.
 
@@ -206,8 +212,12 @@ async def stream_ask_auto(question, k=RETRIEVE_K):
     스트리밍하는 게 목적이 아니라, 최소한 ask_auto()와 같은 정확한 함수로
     답하게 만드는 게 목적이다(전에는 이 경로들도 무조건 검색 방식으로 답해서
     "몇 번 켰어?" 같은 집계 질문이 LLM이 대충 세는 부정확한 답으로 샜다).
+
+    history: [{"question", "answer"}, ...] — 멀티턴 컨텍스트. 지금은 검색
+    intent에만 반영한다(route()가 지시어를 풀 때, stream_ask()가 답변 만들 때).
+    정리/비교/집계는 아직 미반영 — 필요해지면 그때 확장.
     """
-    plan = await route(question)
+    plan = await route(question, history=history)
     yield {"type": "plan", "plan": plan}
 
     periods = plan["periods"]
@@ -217,7 +227,7 @@ async def stream_ask_auto(question, k=RETRIEVE_K):
         dates = [d for period in periods for d in period["dates"]] or None
         search_k = MAX_PERIOD_SEARCH_K if dates else k
         async for item in stream_ask(question, k=search_k, app=plan["app"], hour_start=hour_start,
-                               hour_end=hour_end, site=plan["site"], dates=dates):
+                               hour_end=hour_end, site=plan["site"], dates=dates, history=history):
             yield item
         return
 
@@ -226,15 +236,18 @@ async def stream_ask_auto(question, k=RETRIEVE_K):
             blocks = []
             for period in periods:
                 counter = count_range(period["dates"], app=plan["app"], site=plan["site"])
-                blocks = await asyncio.gather(*[
+                blocks.append(f"[{period['label']}]\n{format_count(counter)}")
+            answer = "\n\n".join(blocks)
+        elif plan["intent"] == "정리":
+            blocks = await asyncio.gather(*[
                 summarize_period(period, app=plan["app"], hour_start=hour_start,
-                                  hour_end=hour_end, site=plan["site"])
+                                  hour_end=hour_end, site=plan["site"], history=history, question=question)
                 for period in periods
             ])
             answer = "\n\n".join(blocks)
         else:
             answer = await compare_periods(question, periods, app=plan["app"], hour_start=hour_start,
-                                            hour_end=hour_end, site=plan["site"])
+                                            hour_end=hour_end, site=plan["site"], history=history)
         yield {"type": "hits", "hits": []}
         yield {"type": "token", "text": answer}
         yield {"type": "done"}
@@ -247,10 +260,10 @@ async def stream_ask_auto(question, k=RETRIEVE_K):
             answer = format_count(counter)
         elif plan["intent"] == "비교":
             answer = await compare_range(question, dates, app=plan["app"], hour_start=hour_start,
-                                    hour_end=hour_end, site=plan["site"])
+                                    hour_end=hour_end, site=plan["site"], history=history)
         else:
             answer = await summarize_range(dates, app=plan["app"], hour_start=hour_start,
-                                      hour_end=hour_end, site=plan["site"])
+                                      hour_end=hour_end, site=plan["site"], history=history, question=question)
         yield {"type": "hits", "hits": []}
         yield {"type": "token", "text": answer}
         yield {"type": "done"}
@@ -259,7 +272,7 @@ async def stream_ask_auto(question, k=RETRIEVE_K):
     # periods가 없는데 intent가 검색이 아닌 드문 경우 — ask_auto()와 동일하게
     # 필터 없는 일반 검색 방식으로 답한다(stream_ask가 done까지 알아서 yield한다).
     async for item in stream_ask(question, k=k, app=plan["app"], hour_start=hour_start,
-                                  hour_end=hour_end, site=plan["site"]):
+                                  hour_end=hour_end, site=plan["site"], history=history):
         yield item
 
 
@@ -342,35 +355,6 @@ async def ask_auto(question, k=RETRIEVE_K):
 
 
 if __name__ == "__main__":
-    while True:
-        question = input("\n질문 (엔터로 종료) > ").strip()
-        if not question:
-            break
-
-        answer, plan, hits = ask_auto(question)
-        periods = ", ".join(f"{p['label']}({len(p['dates'])}일)" for p in plan["periods"])
-        hour = (f"{plan['hour_start']}-{plan['hour_end']}"
-                if plan["hour_start"] is not None else "-")
-        print(f"\n[라우팅: app={plan['app']} hour={hour} "
-              f"periods=[{periods}] intent={plan['intent']}]")
-        print(f"\n{answer}")
-
-        # 답과 근거를 같이 본다. 답만 보면 검색이 엉뚱한 걸 가져온 건지 LLM이
-        # 답을 쓰면서 틀린 건지 구분이 안 된다. 여러 날짜 경로는 이벤트 단위
-        # 근거가 없어서(하루 요약으로 답하므로) hits가 None이다.
-        if hits is None:
-            print("\n(여러 날짜 요약 경로 — 이벤트 단위 근거 없음)")
-        elif hits:
-            print(f"\n--- 근거 {len(hits)}개 ---")
-            for hit in hits:
-                print(f"  [{hit['distance']:.3f}] {hit['start']}  "
-                      f"{hit['app']} / {hit['window'][:40]}")
-        else:
-            print("\n(근거 없음)")
-
-
-
-if __name__ == "__main__":
     import asyncio
 
     async def main():
@@ -378,7 +362,26 @@ if __name__ == "__main__":
             question = input("\n질문 (엔터로 종료) > ").strip()
             if not question:
                 break
+
             answer, plan, hits = await ask_auto(question)
-            ...  # 이하 print 로직 그대로, 들여쓰기만 유지
+            periods = ", ".join(f"{p['label']}({len(p['dates'])}일)" for p in plan["periods"])
+            hour = (f"{plan['hour_start']}-{plan['hour_end']}"
+                    if plan["hour_start"] is not None else "-")
+            print(f"\n[라우팅: app={plan['app']} hour={hour} "
+                  f"periods=[{periods}] intent={plan['intent']}]")
+            print(f"\n{answer}")
+
+            # 답과 근거를 같이 본다. 답만 보면 검색이 엉뚱한 걸 가져온 건지 LLM이
+            # 답을 쓰면서 틀린 건지 구분이 안 된다. 여러 날짜 경로는 이벤트 단위
+            # 근거가 없어서(하루 요약으로 답하므로) hits가 None이다.
+            if hits is None:
+                print("\n(여러 날짜 요약 경로 — 이벤트 단위 근거 없음)")
+            elif hits:
+                print(f"\n--- 근거 {len(hits)}개 ---")
+                for hit in hits:
+                    print(f"  [{hit['distance']:.3f}] {hit['start']}  "
+                          f"{hit['app']} / {hit['window'][:40]}")
+            else:
+                print("\n(근거 없음)")
 
     asyncio.run(main())

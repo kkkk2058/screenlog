@@ -244,6 +244,13 @@ function bindTip(n,t,d){ n.addEventListener("mouseenter",e=>showTip(e,t,d)); n.a
 // ---------- 질의 ----------
 const qform=$("#qform"), qinput=$("#qinput"), qbtn=$("#qbtn"), qstatus=$("#qstatus"), qresult=$("#qresult");
 
+// 멀티턴 대화 기록. 서버는 무상태라 브라우저가 들고 있다가 매 질문마다 최근
+// 몇 턴만 같이 보낸다 — "그날"/"더 자세히" 같은 팔로우업을 풀어내는 용도.
+// 새로고침하면 날아감(로컬 개인용 도구라 이 정도 트레이드오프는 괜찮음).
+const CONV_HISTORY = [];
+const HISTORY_SEND_TURNS = 5;   // 서버로 보내는 최근 턴 수
+const HISTORY_KEEP_TURNS = 10;  // 브라우저가 기억해두는 턴 수(보내는 것보다 넉넉히)
+
 qform.addEventListener("submit", async e=>{
   e.preventDefault();
   const question = qinput.value.trim();
@@ -253,7 +260,9 @@ qform.addEventListener("submit", async e=>{
   qstatus.textContent="검색 중… (첫 질의는 임베딩 모델 로딩으로 느릴 수 있어요)";
 
   try{
-    await askStream(question);
+    const answer = await askStream(question);
+    CONV_HISTORY.push({question, answer});
+    if(CONV_HISTORY.length > HISTORY_KEEP_TURNS) CONV_HISTORY.shift();
     qstatus.textContent="";
   }catch(err){
     qstatus.className="qstatus err"; qstatus.textContent="오류: "+err.message;
@@ -261,11 +270,13 @@ qform.addEventListener("submit", async e=>{
 });
 
 // /api/ask/stream을 SSE로 읽어서 plan/hits는 오는 즉시, 답변은 토큰 올 때마다 이어붙여 그린다.
+// 최근 대화(CONV_HISTORY)를 같이 보내서 서버가 팔로우업 질문을 풀어낼 수 있게 한다.
+// 완성된 답변 텍스트를 반환해서, 호출부가 CONV_HISTORY에 쌓을 수 있게 한다.
 async function askStream(question){
   const res = await fetch("/api/ask/stream", {
     method:"POST",
     headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({question}),
+    body:JSON.stringify({question, history: CONV_HISTORY.slice(-HISTORY_SEND_TURNS)}),
   });
   if(!res.ok) throw new Error("서버 오류 "+res.status);
 
@@ -326,6 +337,8 @@ async function askStream(question){
   }finally{
     clearInterval(timer);   // 에러로 중간에 빠져나가도 타이머는 반드시 정리
   }
+
+  return pending;   // 완성된 답변 전체 텍스트 (CONV_HISTORY에 쌓을 용도)
 }
 
 // plan(app/hour/기간/intent)을 배지로. 값이 있는 것만 강조해서, 질문이

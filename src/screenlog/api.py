@@ -45,8 +45,14 @@ if DOWNLOAD_DIR.exists():
 EXCERPT = 200   # 근거 본문은 이만큼만 내보낸다
 
 
+class HistoryTurn(BaseModel):
+    question: str
+    answer: str
+
+
 class AskRequest(BaseModel):
     question: str
+    history: list[HistoryTurn] = []
 
 
 @app.get("/")
@@ -106,7 +112,8 @@ async def api_ask_stream(req: AskRequest):
             # stream_ask_auto()가 route()로 라우팅하고 intent(검색/정리/비교/집계)에
             # 따라 ask_auto()와 같은 함수로 답을 만든 뒤 plan/hits/token/done
             # 이벤트로 쪼개서 넘겨준다 — 여기서는 그걸 SSE로 포장하기만 한다.
-            async for item in stream_ask_auto(req.question):
+            history = [{"question": h.question, "answer": h.answer} for h in req.history]
+            async for item in stream_ask_auto(req.question, history=history):
                 if item["type"] == "hits":
                     hits_out = []
                     for hit in item["hits"]:
