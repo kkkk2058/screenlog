@@ -82,6 +82,11 @@ RECORDER_BIN = resource_path("screenpipe-bin")
 RECORDER_ARGS = [
     str(RECORDER_BIN), "record",
     "--data-dir", str(DATA_DIR),
+    # DATA_DIR 이름(.screenpipe-redacted)만 믿고 이 플래그들이 빠져 있었다 —
+    # 실제로는 리덕션 없이 원본 텍스트가 그대로 기록되고 있었음.
+    "--async-pii-redaction",
+    "--pii-redaction-labels", "secret,email,phone,person,address",
+    "--pii-backend", "local",
 ]
 
 RECORDER_ENV = {
