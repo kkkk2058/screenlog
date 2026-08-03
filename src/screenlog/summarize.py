@@ -18,11 +18,13 @@ from screenlog.config import AI_APPS, API_KEY, BASE_URL, CHAT_MODEL, MAX_EVENTS_
 from screenlog.index import get_collection
 from screenlog.source import weekday_ko
 
-DAY_SUMMARY_PROMPT = """아래는 사용자의 {date}({weekday}) 하루 화면 사용 기록이다.
+DAY_SUMMARY_PROMPT = """아래는 사용자의 {date}({weekday}) {scope} 화면 사용 기록이다.
 
 {context}
 
-이 날 있었던 일을 5문장 이내로 요약하라. 시각과 앱을 함께 밝힌다.
+이 시간에 있었던 일을 5문장 이내로 요약하라. 시각과 앱을 함께 밝힌다.
+하루 전체를 본 것처럼("하루를 시작했습니다", "마지막으로" 등) 서술하지 말고,
+주어진 기록이 커버하는 시간 범위 안에서만 서술한다.
 기록이 비어 있으면 "기록 없음"이라고만 답한다.
 """
 
@@ -142,7 +144,8 @@ def summarize_day(date, app=None, hour_start=None, hour_end=None, site=None):
 
     events = _thin_out(events, MAX_EVENTS_PER_DAY_SUMMARY)
     context = _format_events(events)
-    summary = _call_llm(DAY_SUMMARY_PROMPT.format(date=date, weekday=weekday, context=context))
+    scope = f"{hour_start}시~{hour_end}시" if hour_start is not None else "하루"
+    summary = _call_llm(DAY_SUMMARY_PROMPT.format(date=date, weekday=weekday, scope=scope, context=context))
     return f"[{date}({weekday})]\n{summary}"
 
 

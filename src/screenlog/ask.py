@@ -164,8 +164,106 @@ def ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=N
         model=CHAT_MODEL,
         temperature=0,
         messages=[{"role": "user", "content": prompt}],
-    )
+        )
     return response.choices[0].message.content, hits
+
+
+
+
+def stream_ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=None, dates=None):
+    hits = search(question, k, app=app, hour_start=hour_start, hour_end=hour_end,
+                  site=site, dates=dates)
+    yield {"type": "hits", "hits": hits}          # ← 메타데이터 먼저 한 번 던짐
+
+    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
+    prompt = PROMPT.format(today=today, weekday=weekday_ko(today),
+                            context=build_context(hits), question=question)
+
+    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
+    response = client.chat.completions.create(
+        model=CHAT_MODEL,
+        temperature=0,
+        messages=[{"role": "user", "content": prompt}],
+        stream=True,
+    )
+
+    for chunk in response:                         # ← 토큰 조각들이 하나씩 들어옴
+        delta = chunk.choices[0].delta.content
+        if delta:                                   # ← None인 조각이 섞여있음, 꼭 체크해야 함
+            yield {"type": "token", "text": delta}
+
+    yield {"type": "done"}                          # ← 스트림 끝났다는 신호
+
+
+def stream_ask_auto(question, k=RETRIEVE_K):
+    """ask_auto()와 같은 라우팅/분기를 쓰되, 결과를 (답변, plan, hits) 튜플로 한 번에
+    돌려주는 대신 plan/hits/token/done 이벤트로 쪼개서 yield한다.
+
+    intent가 "검색"이면 stream_ask()로 넘겨서 진짜 토큰 단위 스트리밍을 한다.
+    "정리"/"비교"/"집계"는 ask_auto()에서처럼 LLM을 여러 번 호출하거나(정리/비교)
+    LLM 없이 metadata를 직접 세는(집계) 구조라 토큰 단위로 쪼갤 수가 없다 — 그래서
+    완성된 답을 한 번에 만든 뒤 단일 token 이벤트로 보낸다. 이 경로들까지 진짜
+    스트리밍하는 게 목적이 아니라, 최소한 ask_auto()와 같은 정확한 함수로
+    답하게 만드는 게 목적이다(전에는 이 경로들도 무조건 검색 방식으로 답해서
+    "몇 번 켰어?" 같은 집계 질문이 LLM이 대충 세는 부정확한 답으로 샜다).
+    """
+    plan = route(question)
+    yield {"type": "plan", "plan": plan}
+
+    periods = plan["periods"]
+    hour_start, hour_end = plan["hour_start"], plan["hour_end"]
+
+    if plan["intent"] == "검색":
+        dates = [d for period in periods for d in period["dates"]] or None
+        search_k = MAX_PERIOD_SEARCH_K if dates else k
+        yield from stream_ask(question, k=search_k, app=plan["app"], hour_start=hour_start,
+                               hour_end=hour_end, site=plan["site"], dates=dates)
+        return
+
+    if len(periods) >= 2:
+        if plan["intent"] == "집계":
+            blocks = []
+            for period in periods:
+                counter = count_range(period["dates"], app=plan["app"], site=plan["site"])
+                blocks.append(f"[{period['label']}]\n{format_count(counter)}")
+            answer = "\n\n".join(blocks)
+        elif plan["intent"] == "정리":
+            answer = "\n\n".join(
+                summarize_period(period, app=plan["app"], hour_start=hour_start,
+                                  hour_end=hour_end, site=plan["site"])
+                for period in periods
+            )
+        else:
+            answer = compare_periods(question, periods, app=plan["app"], hour_start=hour_start,
+                                      hour_end=hour_end, site=plan["site"])
+        yield {"type": "hits", "hits": []}
+        yield {"type": "token", "text": answer}
+        yield {"type": "done"}
+        return
+
+    if len(periods) == 1:
+        dates = periods[0]["dates"]
+        if plan["intent"] == "집계":
+            counter = count_range(dates, app=plan["app"], site=plan["site"])
+            answer = format_count(counter)
+        elif plan["intent"] == "비교":
+            answer = compare_range(question, dates, app=plan["app"], hour_start=hour_start,
+                                    hour_end=hour_end, site=plan["site"])
+        else:
+            answer = summarize_range(dates, app=plan["app"], hour_start=hour_start,
+                                      hour_end=hour_end, site=plan["site"])
+        yield {"type": "hits", "hits": []}
+        yield {"type": "token", "text": answer}
+        yield {"type": "done"}
+        return
+
+    # periods가 없는데 intent가 검색이 아닌 드문 경우 — ask_auto()와 동일하게
+    # 필터 없는 일반 검색 방식으로 답한다(stream_ask가 done까지 알아서 yield한다).
+    yield from stream_ask(question, k=k, app=plan["app"], hour_start=hour_start,
+                           hour_end=hour_end, site=plan["site"])
+
+
+
 
 
 def ask_auto(question, k=RETRIEVE_K):

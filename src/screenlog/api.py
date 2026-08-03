@@ -22,6 +22,12 @@ from pydantic import BaseModel
 from screenlog.ask import ask_auto
 from screenlog.config import AI_APPS
 from screenlog.stats import build_stats, build_timeline
+import json
+from fastapi.responses import StreamingResponse
+
+from screenlog.ask import stream_ask_auto   # ask_auto 옆에 추가
+
+
 
 app = FastAPI(title="screenlog")
 
@@ -30,6 +36,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 # 팀원용 녹화 프로그램(.dmg) 배포 페이지. 여기서 받아야 실제 브라우저
 # 다운로드로 격리(quarantine) 속성이 붙어서, Gatekeeper 경고까지 포함한
 # 진짜 최초 설치 경험을 그대로 재현한다.
+
+
 DOWNLOAD_DIR = Path(__file__).parent.parent.parent / "distribution" / "mac"
 if DOWNLOAD_DIR.exists():
     app.mount("/download", StaticFiles(directory=DOWNLOAD_DIR, html=True), name="download")
@@ -88,3 +96,34 @@ def api_ask(req: AskRequest):
         "plan": plan,
         "hits": hits_out,
     }
+
+
+
+@app.post("/api/ask/stream")
+def api_ask_stream(req: AskRequest):
+    def event_generator():
+        try:
+            # stream_ask_auto()가 route()로 라우팅하고 intent(검색/정리/비교/집계)에
+            # 따라 ask_auto()와 같은 함수로 답을 만든 뒤 plan/hits/token/done
+            # 이벤트로 쪼개서 넘겨준다 — 여기서는 그걸 SSE로 포장하기만 한다.
+            for item in stream_ask_auto(req.question):
+                if item["type"] == "hits":
+                    hits_out = []
+                    for hit in item["hits"]:
+                        hits_out.append({
+                            "start": hit["start"],
+                            "app": hit["app"],
+                            "window": hit["window"],
+                            "distance": round(hit["distance"], 3),
+                            "excerpt": hit["text"][:EXCERPT],
+                            "ai_app": hit["app"] in AI_APPS,
+                        })
+                    payload = {"type": "hits", "hits": hits_out}
+                else:
+                    payload = item   # token이나 done은 그대로
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            error_payload = {"type": "error", "message": str(e)}
+            yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
