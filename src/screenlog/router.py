@@ -16,7 +16,7 @@ LLM 구조화 출력 하나로 통일했다.
 import json
 from datetime import datetime, timedelta
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from screenlog.config import API_KEY, BASE_URL, CHAT_MODEL, MAX_RANGE_DAYS
 from screenlog.source import LOCAL_TZ
@@ -182,7 +182,7 @@ def _parse_hour_range(raw):
     return start, end
 
 
-def route(question, today=None):
+async def route(question, today=None):
     """질문 -> {app, site, hour_start, hour_end, periods, intent} 딕셔너리.
 
     periods: [{"label", "dates": [...]}, ...]. 기간 언급이 없는 질문은
@@ -197,12 +197,12 @@ def route(question, today=None):
     if today is None:
         today = datetime.now(LOCAL_TZ)
 
-    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
+    client = AsyncOpenAI(base_url=BASE_URL, api_key=API_KEY)
     prompt = ROUTE_PROMPT.format(
         today=today.strftime("%Y-%m-%d"), app_hint=_APP_HINT, site_hint=_SITE_HINT,
         max_days=MAX_RANGE_DAYS, question=question,
     )
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=CHAT_MODEL,
         temperature=0,
         response_format={

@@ -70,7 +70,26 @@
   .badge b{ color:var(--ink); font-weight:600; }
   .badge.on{ border-color:var(--accent); color:var(--accent); }
   .badge.intent{ border-color:var(--accent); color:#fff; background:var(--accent); }
-  .answer{ font-size:14.5px; line-height:1.65; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; padding:14px 16px; white-space:pre-wrap; }
+  .answer{ font-size:14.5px; line-height:1.65; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+  .answer p{ margin:0 0 12px; }
+  .answer p:last-child{ margin-bottom:0; }
+  .answer ul{ margin:0 0 12px; padding-left:19px; }
+  .answer ul:last-child{ margin-bottom:0; }
+  .answer ul ul{ margin:4px 0; padding-left:18px; }
+  .answer li{ margin-bottom:5px; }
+  .answer li::marker{ color:var(--muted); }
+  .answer b{ font-weight:650; }
+  .answer .time{ font-family:var(--mono); font-size:.92em; color:var(--accent); }
+
+  /* 날짜/기간별 아코디언 */
+  .answer details.daybox{ border:1px solid var(--border); border-radius:8px; margin:0 0 8px; background:var(--surface); overflow:hidden; }
+  .answer details.daybox:last-child{ margin-bottom:0; }
+  .answer details.daybox summary{ cursor:pointer; list-style:none; padding:9px 12px; font-weight:640; font-size:13px; color:var(--ink-2); background:var(--surface-3); user-select:none; }
+  .answer details.daybox summary::-webkit-details-marker{ display:none; }
+  .answer details.daybox summary::before{ content:"▸"; display:inline-block; width:1em; margin-right:4px; color:var(--muted); transition:transform .15s; }
+  .answer details.daybox[open] summary::before{ transform:rotate(90deg); }
+  .answer .daybox-body{ padding:10px 12px 2px; }
+  .answer .daybox-body > *:last-child{ margin-bottom:0; }
   .hits{ display:flex; flex-direction:column; gap:8px; }
   .hit{ padding:10px 12px; border:1px solid var(--border); border-radius:9px; background:var(--surface); }
   .hit-head{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:5px; }
@@ -341,10 +360,86 @@ function showSkeleton(){
   qresult.hidden = false;
 }
 
-// **bold**만 처리하는 가벼운 마크다운. esc()로 먼저 이스케이프해야 사용자가
-// 마크다운 문법처럼 보이는 텍스트를 넣어도 HTML 인젝션이 안 된다.
+// "14시 30분"/"14시30분" 같은 시각 표현을 강조 span으로 감싼다. bold 처리
+// 뒤에 돌리므로 <b> 태그와는 안 겹친다("시"/숫자만 매칭해서 태그 문법과 충돌 안 함).
+function highlightTime(html){
+  return html.replace(/\d{1,2}시(?:\s?\d{1,2}분)?/g, m => `<span class="time">${m}</span>`);
+}
+
+function isDayHeader(line){ return /^\[\d{4}-\d{2}-\d{2}\([^)]*\)\]$/.test(line.trim()); }
+function isPeriodHeader(line){ return /^###\s+/.test(line.trim()); }
+
+// "* " 불릿 리스트(중첩 2단까지)와 일반 문단(<p>)만 처리한다. 헤더 판별은
+// mdLite()가 미리 끝내고, 여기엔 헤더 없는 본문 줄만 들어온다.
+function renderBlock(lines){
+  let html = "";
+  let ulOpen = false, subOpen = false;
+  let para = [];   // 리스트가 아닌 일반 줄을 모아뒀다가 <p>로 묶는다
+
+  const flushPara = () => {
+    if(para.length){ html += `<p>${para.join("<br>")}</p>`; para = []; }
+  };
+  const closeLists = () => {
+    if(subOpen){ html += "</ul>"; subOpen = false; }
+    if(ulOpen){ html += "</ul>"; ulOpen = false; }
+  };
+
+  for(const raw of lines){
+    if(raw.trim() === ""){ flushPara(); closeLists(); continue; }
+
+    const m = raw.match(/^(\s*)\*\s+(.*)$/);
+    if(m){
+      flushPara();
+      const nested = m[1].length >= 2;
+      if(!ulOpen){ html += "<ul>"; ulOpen = true; }
+      if(nested && !subOpen){ html += "<ul>"; subOpen = true; }
+      if(!nested && subOpen){ html += "</ul>"; subOpen = false; }
+      html += `<li>${m[2]}</li>`;
+    }else{
+      closeLists();
+      para.push(raw);
+    }
+  }
+  flushPara();
+  closeLists();
+  return html;
+}
+
+// **bold** + 시각 강조 + 불릿 리스트를 처리하고, "[날짜(요일)]"/"### 기간"
+// 헤더를 만나면 그 아래 내용을 접었다 펼 수 있는 <details>로 묶는다.
+// esc()로 먼저 이스케이프해야 사용자가 마크다운 문법처럼 보이는 텍스트를
+// 넣어도 HTML 인젝션이 안 된다 — 그 뒤에 만든 태그들만 실제 HTML이다.
 function mdLite(text){
-  return esc(text).replace(/\*\*(.+?)\*\*/gs, "<b>$1</b>");
+  const bolded = esc(text).replace(/\*\*(.+?)\*\*/gs, "<b>$1</b>");
+  const lines = highlightTime(bolded).split("\n");
+
+  if(!lines.some(l => isDayHeader(l) || isPeriodHeader(l))){
+    return renderBlock(lines);   // 헤더가 없는 단일 답변(검색 intent 등)은 그냥 렌더링
+  }
+
+  let html = "";
+  let preLines = [];   // 첫 헤더가 나오기 전 줄(보통 없음)
+  let curHeader = null;
+  let curLines = [];
+
+  const flushSection = () => {
+    if(curHeader == null) return;
+    html += `<details class="daybox" open><summary>${curHeader}</summary>` +
+            `<div class="daybox-body">${renderBlock(curLines)}</div></details>`;
+    curLines = [];
+  };
+
+  for(const raw of lines){
+    if(isDayHeader(raw) || isPeriodHeader(raw)){
+      flushSection();
+      curHeader = raw.trim().replace(/^\[|\]$/g, "").replace(/^###\s+/, "");
+      continue;
+    }
+    (curHeader == null ? preLines : curLines).push(raw);
+  }
+  flushSection();
+
+  return renderBlock(preLines) + html;
 }
 
 // showCursor가 true면 끝에 깜빡이는 타이핑 커서를 붙인다.

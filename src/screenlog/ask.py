@@ -10,7 +10,7 @@
 
 from datetime import datetime
 
-from openai import OpenAI
+from openai import AsyncOpenAI 
 
 from screenlog.config import (
     AI_APPS,
@@ -148,7 +148,7 @@ def build_context(hits):
     return "\n\n".join(blocks)
 
 
-def ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=None, dates=None):
+async def ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=None, dates=None):
     """질문 -> (답변, 근거 목록).
 
     app/hour_range/site/dates는 그대로 search()에 넘긴다.
@@ -159,8 +159,8 @@ def ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=N
     prompt = PROMPT.format(today=today, weekday=weekday_ko(today),
                             context=build_context(hits), question=question)
 
-    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
-    response = client.chat.completions.create(
+    client = AsyncOpenAI(base_url=BASE_URL, api_key=API_KEY)
+    response = await client.chat.completions.create(
         model=CHAT_MODEL,
         temperature=0,
         messages=[{"role": "user", "content": prompt}],
@@ -170,7 +170,7 @@ def ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=N
 
 
 
-def stream_ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=None, dates=None):
+async def stream_ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, site=None, dates=None):
     hits = search(question, k, app=app, hour_start=hour_start, hour_end=hour_end,
                   site=site, dates=dates)
     yield {"type": "hits", "hits": hits}          # ← 메타데이터 먼저 한 번 던짐
@@ -179,15 +179,15 @@ def stream_ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None,
     prompt = PROMPT.format(today=today, weekday=weekday_ko(today),
                             context=build_context(hits), question=question)
 
-    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
-    response = client.chat.completions.create(
+    client = AsyncOpenAI(base_url=BASE_URL, api_key=API_KEY)
+    response = await client.chat.completions.create(
         model=CHAT_MODEL,
         temperature=0,
         messages=[{"role": "user", "content": prompt}],
         stream=True,
     )
 
-    for chunk in response:                         # ← 토큰 조각들이 하나씩 들어옴
+    async for chunk in response:                         # ← 토큰 조각들이 하나씩 들어옴
         delta = chunk.choices[0].delta.content
         if delta:                                   # ← None인 조각이 섞여있음, 꼭 체크해야 함
             yield {"type": "token", "text": delta}
@@ -195,7 +195,7 @@ def stream_ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None,
     yield {"type": "done"}                          # ← 스트림 끝났다는 신호
 
 
-def stream_ask_auto(question, k=RETRIEVE_K):
+async def stream_ask_auto(question, k=RETRIEVE_K):
     """ask_auto()와 같은 라우팅/분기를 쓰되, 결과를 (답변, plan, hits) 튜플로 한 번에
     돌려주는 대신 plan/hits/token/done 이벤트로 쪼개서 yield한다.
 
@@ -207,7 +207,7 @@ def stream_ask_auto(question, k=RETRIEVE_K):
     답하게 만드는 게 목적이다(전에는 이 경로들도 무조건 검색 방식으로 답해서
     "몇 번 켰어?" 같은 집계 질문이 LLM이 대충 세는 부정확한 답으로 샜다).
     """
-    plan = route(question)
+    plan = await route(question)
     yield {"type": "plan", "plan": plan}
 
     periods = plan["periods"]
@@ -216,8 +216,9 @@ def stream_ask_auto(question, k=RETRIEVE_K):
     if plan["intent"] == "검색":
         dates = [d for period in periods for d in period["dates"]] or None
         search_k = MAX_PERIOD_SEARCH_K if dates else k
-        yield from stream_ask(question, k=search_k, app=plan["app"], hour_start=hour_start,
-                               hour_end=hour_end, site=plan["site"], dates=dates)
+        async for item in stream_ask(question, k=search_k, app=plan["app"], hour_start=hour_start,
+                               hour_end=hour_end, site=plan["site"], dates=dates):
+            yield item
         return
 
     if len(periods) >= 2:
@@ -225,17 +226,15 @@ def stream_ask_auto(question, k=RETRIEVE_K):
             blocks = []
             for period in periods:
                 counter = count_range(period["dates"], app=plan["app"], site=plan["site"])
-                blocks.append(f"[{period['label']}]\n{format_count(counter)}")
-            answer = "\n\n".join(blocks)
-        elif plan["intent"] == "정리":
-            answer = "\n\n".join(
+                blocks = await asyncio.gather(*[
                 summarize_period(period, app=plan["app"], hour_start=hour_start,
                                   hour_end=hour_end, site=plan["site"])
                 for period in periods
-            )
+            ])
+            answer = "\n\n".join(blocks)
         else:
-            answer = compare_periods(question, periods, app=plan["app"], hour_start=hour_start,
-                                      hour_end=hour_end, site=plan["site"])
+            answer = await compare_periods(question, periods, app=plan["app"], hour_start=hour_start,
+                                            hour_end=hour_end, site=plan["site"])
         yield {"type": "hits", "hits": []}
         yield {"type": "token", "text": answer}
         yield {"type": "done"}
@@ -247,10 +246,10 @@ def stream_ask_auto(question, k=RETRIEVE_K):
             counter = count_range(dates, app=plan["app"], site=plan["site"])
             answer = format_count(counter)
         elif plan["intent"] == "비교":
-            answer = compare_range(question, dates, app=plan["app"], hour_start=hour_start,
+            answer = await compare_range(question, dates, app=plan["app"], hour_start=hour_start,
                                     hour_end=hour_end, site=plan["site"])
         else:
-            answer = summarize_range(dates, app=plan["app"], hour_start=hour_start,
+            answer = await summarize_range(dates, app=plan["app"], hour_start=hour_start,
                                       hour_end=hour_end, site=plan["site"])
         yield {"type": "hits", "hits": []}
         yield {"type": "token", "text": answer}
@@ -259,14 +258,12 @@ def stream_ask_auto(question, k=RETRIEVE_K):
 
     # periods가 없는데 intent가 검색이 아닌 드문 경우 — ask_auto()와 동일하게
     # 필터 없는 일반 검색 방식으로 답한다(stream_ask가 done까지 알아서 yield한다).
-    yield from stream_ask(question, k=k, app=plan["app"], hour_start=hour_start,
-                           hour_end=hour_end, site=plan["site"])
+    async for item in stream_ask(question, k=k, app=plan["app"], hour_start=hour_start,
+                                  hour_end=hour_end, site=plan["site"]):
+        yield item
 
 
-
-
-
-def ask_auto(question, k=RETRIEVE_K):
+async def ask_auto(question, k=RETRIEVE_K):
     """질문만 받아서 route()로 필터를 뽑고, 알아서 알맞은 방식으로 답한다.
 
     (답변, plan, hits) 3개를 돌려준다. hits는 정리/비교/집계 경로엔 이벤트
@@ -296,18 +293,15 @@ def ask_auto(question, k=RETRIEVE_K):
         비교   summarize.compare_range() — 하루 요약들을 다시 LLM으로 비교
         정리   summarize.summarize_range() — 하루 요약들을 그대로 이어붙임
     """
-    plan = route(question)
+    plan = await route(question)
     periods = plan["periods"]
     hour_start, hour_end = plan["hour_start"], plan["hour_end"]
 
     if plan["intent"] == "검색":
         dates = [d for period in periods for d in period["dates"]] or None
-        # 기간이 있는 검색("14일치 디스코드 공지 찾아줘")은 RETRIEVE_K(10)로
-        # 자르면 기간이 길어질수록 관련 이벤트가 top-10 밖으로 밀려서 통째로
-        # 빠진다. 기간 없는 단발 질문보다 훨씬 넉넉한 상한을 따로 쓴다.
         search_k = MAX_PERIOD_SEARCH_K if dates else k
-        answer, hits = ask(question, k=search_k, app=plan["app"], hour_start=hour_start,
-                            hour_end=hour_end, site=plan["site"], dates=dates)
+        answer, hits = await ask(question, k=search_k, app=plan["app"], hour_start=hour_start,
+                                  hour_end=hour_end, site=plan["site"], dates=dates)
         return answer, plan, hits
 
     if len(periods) >= 2:
@@ -318,14 +312,15 @@ def ask_auto(question, k=RETRIEVE_K):
                 blocks.append(f"[{period['label']}]\n{format_count(counter)}")
             answer = "\n\n".join(blocks)
         elif plan["intent"] == "정리":
-            answer = "\n\n".join(
+            blocks = await asyncio.gather(*[
                 summarize_period(period, app=plan["app"], hour_start=hour_start,
                                   hour_end=hour_end, site=plan["site"])
                 for period in periods
-            )
+            ])
+            answer = "\n\n".join(blocks)
         else:
-            answer = compare_periods(question, periods, app=plan["app"], hour_start=hour_start,
-                                      hour_end=hour_end, site=plan["site"])
+            answer = await compare_periods(question, periods, app=plan["app"], hour_start=hour_start,
+                                            hour_end=hour_end, site=plan["site"])
         return answer, plan, None
 
     if len(periods) == 1:
@@ -334,15 +329,15 @@ def ask_auto(question, k=RETRIEVE_K):
             counter = count_range(dates, app=plan["app"], site=plan["site"])
             answer = format_count(counter)
         elif plan["intent"] == "비교":
-            answer = compare_range(question, dates, app=plan["app"], hour_start=hour_start,
-                                    hour_end=hour_end, site=plan["site"])
+            answer = await compare_range(question, dates, app=plan["app"], hour_start=hour_start,
+                                          hour_end=hour_end, site=plan["site"])
         else:
-            answer = summarize_range(dates, app=plan["app"], hour_start=hour_start,
-                                      hour_end=hour_end, site=plan["site"])
+            answer = await summarize_range(dates, app=plan["app"], hour_start=hour_start,
+                                            hour_end=hour_end, site=plan["site"])
         return answer, plan, None
 
-    answer, hits = ask(question, k=k, app=plan["app"], hour_start=hour_start,
-                        hour_end=hour_end, site=plan["site"])
+    answer, hits = await ask(question, k=k, app=plan["app"], hour_start=hour_start,
+                              hour_end=hour_end, site=plan["site"])
     return answer, plan, hits
 
 
@@ -372,3 +367,18 @@ if __name__ == "__main__":
                       f"{hit['app']} / {hit['window'][:40]}")
         else:
             print("\n(근거 없음)")
+
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    async def main():
+        while True:
+            question = input("\n질문 (엔터로 종료) > ").strip()
+            if not question:
+                break
+            answer, plan, hits = await ask_auto(question)
+            ...  # 이하 print 로직 그대로, 들여쓰기만 유지
+
+    asyncio.run(main())

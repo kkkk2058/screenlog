@@ -72,9 +72,9 @@ def api_timeline(date: str):
 
 
 @app.post("/api/ask")
-def api_ask(req: AskRequest):
+async def api_ask(req: AskRequest):
     """질문 -> ask_auto()를 그대로 호출하고 결과를 JSON으로 돌려준다."""
-    answer, plan, hits = ask_auto(req.question)
+    answer, plan, hits = await ask_auto(req.question)
 
     # 여러 날짜 경로(정리/비교/집계)는 이벤트 단위 근거가 없어서 hits가 None이다.
     hits_out = []
@@ -100,13 +100,13 @@ def api_ask(req: AskRequest):
 
 
 @app.post("/api/ask/stream")
-def api_ask_stream(req: AskRequest):
-    def event_generator():
+async def api_ask_stream(req: AskRequest):
+    async def event_generator():
         try:
             # stream_ask_auto()가 route()로 라우팅하고 intent(검색/정리/비교/집계)에
             # 따라 ask_auto()와 같은 함수로 답을 만든 뒤 plan/hits/token/done
             # 이벤트로 쪼개서 넘겨준다 — 여기서는 그걸 SSE로 포장하기만 한다.
-            for item in stream_ask_auto(req.question):
+            async for item in stream_ask_auto(req.question):
                 if item["type"] == "hits":
                     hits_out = []
                     for hit in item["hits"]:
