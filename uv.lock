@@ -1974,8 +1974,6 @@ langchain = [
     { name = "langchain-openai" },
 ]
 langgraph = [
-    { name = "langchain-core" },
-    { name = "langchain-openai" },
     { name = "langgraph" },
 ]
 
@@ -1989,9 +1987,7 @@ requires-dist = [
     { name = "chromadb", specifier = ">=1.5.9" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=0.3" },
-    { name = "langchain-core", marker = "extra == 'langgraph'", specifier = ">=0.3" },
     { name = "langchain-openai", marker = "extra == 'langchain'", specifier = ">=0.3" },
-    { name = "langchain-openai", marker = "extra == 'langgraph'", specifier = ">=0.3" },
     { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=0.2" },
     { name = "openai", specifier = ">=2.46.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },

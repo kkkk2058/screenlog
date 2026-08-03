@@ -16,11 +16,13 @@ dependencies = [
     "uvicorn>=0.32.0",          # FastAPI를 띄우는 서버
 ]
 
-# router/ask/summarize를 같은 기능으로 프레임워크만 바꿔 다시 짠 버전들.
-# 비교가 목적이라 기본 설치엔 안 끼워 넣고 extra로 분리했다(uv sync --extra langchain 등).
+# langchain: router/ask/summarize를 langchain_openai로 다시 짠 비교용 버전.
+# langgraph: route()/검색/요약은 원본을 그대로 가져다 쓰고, 오케스트레이션(그래프
+# 분기·스트리밍)만 새로 짠 버전 — LLM 호출 라이브러리를 바꾼 게 아니라 그래프
+# 엔진만 얹은 거라 langgraph 하나만 있으면 된다.
 [project.optional-dependencies]
 langchain = ["langchain-core>=0.3", "langchain-openai>=0.3"]
-langgraph = ["langchain-core>=0.3", "langchain-openai>=0.3", "langgraph>=0.2"]
+langgraph = ["langgraph>=0.2"]
 
 [dependency-groups]
 dev = [

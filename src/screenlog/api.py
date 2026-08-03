@@ -23,15 +23,21 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from screenlog import chat_history, summary_cache
-from screenlog.ask import ask_auto
-from screenlog.config import AI_APPS
+from screenlog.config import AI_APPS, USE_LANGGRAPH
 from screenlog.source import weekday_ko
 from screenlog.stats import build_stats, build_timeline
 from screenlog.summarize import summarize_day
 import json
 from fastapi.responses import StreamingResponse
 
-from screenlog.ask import stream_ask_auto   # ask_auto 옆에 추가
+# ask_auto/stream_ask_auto 구현을 USE_LANGGRAPH 환경변수로 고른다. 둘의
+# 시그니처와 반환/이벤트 형태가 동일해서(screenlog_langgraph/graph.py 참고)
+# 아래 라우트 코드는 어느 쪽이 켜져 있든 손댈 필요가 없다 — A/B든 롤백이든
+# 이 한 줄의 분기로 끝난다.
+if USE_LANGGRAPH:
+    from screenlog_langgraph.graph import ask_auto, stream_ask_auto
+else:
+    from screenlog.ask import ask_auto, stream_ask_auto
 
 
 
