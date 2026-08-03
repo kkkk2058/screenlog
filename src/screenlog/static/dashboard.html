@@ -64,7 +64,17 @@
   #qbtn:disabled{ opacity:.5; cursor:default; }
   .qstatus{ font-family:var(--mono); font-size:12px; color:var(--muted); margin-top:10px; min-height:1em; }
   .qstatus.err{ color:#d03b3b; }
-  .qresult{ margin-top:14px; display:flex; flex-direction:column; gap:14px; }
+
+  /* 채팅 로그 — 턴마다 사용자 말풍선 + 답변(plan/answer/hits)을 쌓는다 */
+  .chatlog{ display:flex; flex-direction:column; gap:22px; margin-bottom:16px; }
+  .chatlog:empty{ margin-bottom:0; }
+  .turn{ display:flex; flex-direction:column; gap:10px; }
+  .msg-user{ align-self:flex-end; max-width:80%; background:var(--accent); color:#fff;
+             padding:10px 14px; border-radius:14px 14px 4px 14px; font-size:14px;
+             line-height:1.5; white-space:pre-wrap; }
+  .msg-bot{ display:flex; flex-direction:column; gap:10px; }
+  .msg-bot .answer{ border-radius:4px 14px 14px 14px; }
+
   .plan-badges{ display:flex; flex-wrap:wrap; gap:8px; }
   .badge{ font-family:var(--mono); font-size:11.5px; padding:4px 10px; border-radius:999px; border:1px solid var(--border); color:var(--muted); background:var(--surface-2); }
   .badge b{ color:var(--ink); font-weight:600; }
@@ -98,6 +108,16 @@
   .hit .hwin{ font-size:11.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:220px; }
   .hit .hex{ font-size:12.5px; color:var(--ink-2); line-height:1.5; max-height:4.5em; overflow:hidden; }
   .warn{ font-size:11px; padding:2px 8px; border-radius:999px; background:var(--warn-bg); color:var(--warn); border:1px solid var(--border); }
+
+  /* 근거 — 기본 접힘, 한 줄 요약만 보이다가 클릭하면 카드 펼쳐짐 */
+  .hitsbox{ border:1px solid var(--border); border-radius:9px; overflow:hidden; background:var(--surface); }
+  .hitsbox summary{ cursor:pointer; list-style:none; padding:8px 12px; font-size:12.5px;
+                     color:var(--muted); user-select:none; }
+  .hitsbox summary::-webkit-details-marker{ display:none; }
+  .hitsbox summary::before{ content:"▸"; display:inline-block; width:1em; margin-right:4px;
+                             color:var(--muted); transition:transform .15s; }
+  .hitsbox[open] summary::before{ transform:rotate(90deg); }
+  .hitsbox .hits-list{ padding:0 10px 10px; display:flex; flex-direction:column; gap:8px; }
 
   /* 스트리밍 로딩 스켈레톤 */
   .skeleton{ background:linear-gradient(90deg,var(--surface-2) 25%,var(--surface-3) 37%,var(--surface-2) 63%); background-size:400% 100%; animation:sk-pulse 1.4s ease infinite; border-radius:7px; }
@@ -174,18 +194,14 @@
 
   <section class="card">
     <div class="card-head"><h2>물어보기</h2><span class="hint">plan · answer · hits</span></div>
-    <p class="sub">답이 이상하면 plan을 먼저 보세요 — 라우팅이 틀렸는지 검색이 틀렸는지 거기서 갈립니다.</p>
+    <p class="sub">답이 이상하면 plan을 먼저 보세요 — 라우팅이 틀렸는지 검색이 틀렸는지 거기서 갈립니다. 대화는 이어서 물어볼 수 있어요("그날은?" 등) — 새로고침하면 초기화됩니다.</p>
+    <div class="chatlog" id="chatlog"></div>
     <form id="qform" class="qform">
       <input id="qinput" type="text" autocomplete="off" autofocus
              placeholder="예: 카카오톡에서 무슨 얘기 했지? · 어제 뭐 했어? · 이번 주 정리해줘">
       <button type="submit" id="qbtn">질의</button>
     </form>
     <div class="qstatus" id="qstatus"></div>
-    <div class="qresult" id="qresult" hidden>
-      <div class="plan-badges" id="plan-badges"></div>
-      <div class="answer" id="answer"></div>
-      <div class="hits" id="hits"></div>
-    </div>
   </section>
 
   <section class="card">
@@ -241,8 +257,8 @@ function moveTip(e){ const p=14; let x=e.clientX+p,y=e.clientY+p; const r=tip.ge
   tip.style.left=x+"px"; tip.style.top=y+"px"; }
 function bindTip(n,t,d){ n.addEventListener("mouseenter",e=>showTip(e,t,d)); n.addEventListener("mousemove",moveTip); n.addEventListener("mouseleave",()=>tip.style.opacity=0); }
 
-// ---------- 질의 ----------
-const qform=$("#qform"), qinput=$("#qinput"), qbtn=$("#qbtn"), qstatus=$("#qstatus"), qresult=$("#qresult");
+// ---------- 질의 (채팅 로그) ----------
+const qform=$("#qform"), qinput=$("#qinput"), qbtn=$("#qbtn"), qstatus=$("#qstatus"), chatlog=$("#chatlog");
 
 // 멀티턴 대화 기록. 서버는 무상태라 브라우저가 들고 있다가 매 질문마다 최근
 // 몇 턴만 같이 보낸다 — "그날"/"더 자세히" 같은 팔로우업을 풀어내는 용도.
@@ -251,28 +267,48 @@ const CONV_HISTORY = [];
 const HISTORY_SEND_TURNS = 5;   // 서버로 보내는 최근 턴 수
 const HISTORY_KEEP_TURNS = 10;  // 브라우저가 기억해두는 턴 수(보내는 것보다 넉넉히)
 
+// 질문마다 채팅 로그에 새 턴(사용자 말풍선 + 답변 영역)을 쌓는다. 이전 답변은
+// 안 지워지고 계속 쌓이는 게 이전(질문 하나 = 답변 영역 하나 덮어쓰기)과의 차이.
+function createTurn(question){
+  const turn = el("div","turn");
+  turn.append(el("div","msg-user", question));
+
+  const bot = el("div","msg-bot");
+  const badges = el("div","plan-badges");
+  const answer = el("div","answer");
+  const hits = el("div","hits");
+  bot.append(badges, answer, hits);
+  turn.append(bot);
+
+  chatlog.append(turn);
+  turn.scrollIntoView({behavior:"smooth", block:"start"});
+  return {badges, answer, hits};
+}
+
 qform.addEventListener("submit", async e=>{
   e.preventDefault();
   const question = qinput.value.trim();
   if(!question) return;
 
+  qinput.value = "";
   qbtn.disabled=true; qstatus.className="qstatus";
-  qstatus.textContent="검색 중… (첫 질의는 임베딩 모델 로딩으로 느릴 수 있어요)";
 
+  const els = createTurn(question);
   try{
-    const answer = await askStream(question);
+    const answer = await askStream(question, els);
     CONV_HISTORY.push({question, answer});
     if(CONV_HISTORY.length > HISTORY_KEEP_TURNS) CONV_HISTORY.shift();
-    qstatus.textContent="";
   }catch(err){
     qstatus.className="qstatus err"; qstatus.textContent="오류: "+err.message;
-  }finally{ qbtn.disabled=false; }
+    els.answer.innerHTML = `<p style="color:#d03b3b">오류: ${esc(err.message)}</p>`;
+  }finally{ qbtn.disabled=false; qinput.focus(); }
 });
 
 // /api/ask/stream을 SSE로 읽어서 plan/hits는 오는 즉시, 답변은 토큰 올 때마다 이어붙여 그린다.
 // 최근 대화(CONV_HISTORY)를 같이 보내서 서버가 팔로우업 질문을 풀어낼 수 있게 한다.
-// 완성된 답변 텍스트를 반환해서, 호출부가 CONV_HISTORY에 쌓을 수 있게 한다.
-async function askStream(question){
+// els는 createTurn()이 만든 이번 턴의 DOM 자리(badges/answer/hits) — 매번 새 턴이라
+// #answer 같은 전역 id 대신 이걸 채운다. 완성된 답변 텍스트를 반환해서 CONV_HISTORY에 쌓는다.
+async function askStream(question, els){
   const res = await fetch("/api/ask/stream", {
     method:"POST",
     headers:{"Content-Type":"application/json"},
@@ -280,7 +316,7 @@ async function askStream(question){
   });
   if(!res.ok) throw new Error("서버 오류 "+res.status);
 
-  showSkeleton();
+  showSkeleton(els);
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -292,18 +328,30 @@ async function askStream(question){
   // 서버는 토큰을 문장 덩어리로 뭉텅이째 보내서, 도착 즉시 그리면 뚝뚝 끊겨 보인다.
   // 그래서 도착한 텍스트는 pending에 쌓아만 두고, 별도 타이머로 조금씩 꺼내
   // 화면(displayed)에 채워서 타이핑처럼 고르게 흘러나오게 만든다.
+  //
+  // 한 틱에 그리는 글자 수는 남은 양에 비례시킨다. 고정 2글자로 두면 캐시된
+  // 답(요약이 즉시 도착)이 4,600자쯤 될 때 화면에 다 뜨는 데만 30초가 걸려서,
+  // 백엔드를 빠르게 만든 이득을 애니메이션이 통째로 먹어버린다. 스트리밍처럼
+  // 조금씩 도착할 때는 남은 양이 적어 자연히 최소값(2글자)으로 떨어진다.
+  //
+  // 주의: 매 틱 "남은 양" 기준으로 다시 나누므로 TYPE_TICKS번에 끝나지 않고
+  // 비율만큼 기하급수로 줄어든다(실측: 90으로 두니 380틱 ≈ 5.7초). 20이면
+  // 4,600자가 약 113틱 ≈ 1.7초에 수렴한다.
+  const TYPE_MS = 15, TYPE_TICKS = 20, TYPE_MIN = 2;
   let timer = null;
   const typingDone = new Promise(resolve=>{
     timer = setInterval(()=>{
-      if(displayed.length < pending.length){
-        displayed += pending.slice(displayed.length, displayed.length+2);
-        renderAnswer(displayed, true);   // true = 아직 쓰는 중 -> 커서 표시
+      const remaining = pending.length - displayed.length;
+      if(remaining > 0){
+        const step = Math.max(TYPE_MIN, Math.ceil(remaining / TYPE_TICKS));
+        displayed += pending.slice(displayed.length, displayed.length + step);
+        renderAnswer(els, displayed, true);   // true = 아직 쓰는 중 -> 커서 표시
       }else if(networkDone){
         clearInterval(timer);
-        renderAnswer(displayed, false);  // 다 끝남 -> 커서 제거
+        renderAnswer(els, displayed, false);  // 다 끝남 -> 커서 제거
         resolve();
       }
-    }, 15);
+    }, TYPE_MS);
   });
 
   try{
@@ -321,9 +369,9 @@ async function askStream(question){
         const payload = JSON.parse(part.slice(6));
 
         if(payload.type === "plan"){
-          renderPlan(payload.plan);
+          renderPlan(els, payload.plan);
         }else if(payload.type === "hits"){
-          renderHits(payload.hits);
+          renderHits(els, payload.hits);
         }else if(payload.type === "token"){
           pending += payload.text;
         }else if(payload.type === "error"){
@@ -343,8 +391,8 @@ async function askStream(question){
 
 // plan(app/hour/기간/intent)을 배지로. 값이 있는 것만 강조해서, 질문이
 // 어떤 필터로 해석됐는지 한눈에 보이게 한다.
-function renderPlan(plan){
-  const badges=$("#plan-badges"); badges.innerHTML="";
+function renderPlan(els, plan){
+  const badges=els.badges; badges.innerHTML="";
 
   const hour = plan.hour_start!=null ? `${plan.hour_start}-${plan.hour_end}` : null;
   const totalDates = plan.periods.reduce((n,p)=>n+p.dates.length, 0);
@@ -360,17 +408,16 @@ function renderPlan(plan){
 
 // 로딩 중임을 보여주는 스켈레톤 placeholder. hits/answer가 오면 각자 innerHTML을
 // 덮어써서 자연스럽게 사라진다 — 별도로 지우는 코드가 필요 없다.
-function showSkeleton(){
-  $("#plan-badges").innerHTML = "";
-  $("#answer").innerHTML =
+function showSkeleton(els){
+  els.badges.innerHTML = "";
+  els.answer.innerHTML =
     '<div class="skeleton sk-line" style="width:92%"></div>' +
     '<div class="skeleton sk-line" style="width:78%"></div>' +
     '<div class="skeleton sk-line" style="width:55%"></div>';
-  $("#hits").innerHTML =
+  els.hits.innerHTML =
     '<div class="skeleton sk-hit" style="margin-bottom:8px"></div>' +
     '<div class="skeleton sk-hit" style="margin-bottom:8px"></div>' +
     '<div class="skeleton sk-hit"></div>';
-  qresult.hidden = false;
 }
 
 // "14시 30분"/"14시30분" 같은 시각 표현을 강조 span으로 감싼다. bold 처리
@@ -456,28 +503,46 @@ function mdLite(text){
 }
 
 // showCursor가 true면 끝에 깜빡이는 타이핑 커서를 붙인다.
-function renderAnswer(text, showCursor){
-  $("#answer").innerHTML = mdLite(text) + (showCursor ? '<span class="cursor">▍</span>' : "");
+function renderAnswer(els, text, showCursor){
+  els.answer.innerHTML = mdLite(text) + (showCursor ? '<span class="cursor">▍</span>' : "");
 }
 
-function renderHits(hits){
-  const box=$("#hits"); box.innerHTML="";
-  if(hits.length){
-    for(const h of hits){
-      const card=el("div","hit");
-      const head=el("div","hit-head");
-      const app=el("div","happ");
-      const sw=el("span","sw"); sw.style.background=colorVar(h.app);
-      app.append(sw, document.createTextNode(lab(h.app)));
-      head.append(app, el("span","hmeta", h.start.slice(5,16).replace("T"," ")+" · "+h.distance));
-      if(h.window) head.append(el("span","hwin", h.window));
-      if(h.ai_app) head.append(el("span","warn","AI 화면 · 재귀 오염 주의"));
-      card.append(head, el("div","hex", h.excerpt));
-      box.append(card);
-    }
-  }else{
+// 근거 카드를 기본 접힌 <details>로 감싼다. 답변마다 카드가 쫙 펼쳐지면 채팅
+// 흐름을 근거가 다 잡아먹어서, "한 줄 요약 + 클릭하면 검증 가능"으로 바꿨다 —
+// 숨기는 게 아니라 항상 한 클릭 거리에 있게 하는 것이 핵심(신뢰는 유지, 시각적
+// 무게만 줄임).
+function renderHits(els, hits){
+  const box=els.hits; box.innerHTML="";
+  if(!hits.length){
     box.append(el("div","hint","근거 없음"));
+    return;
   }
+
+  const appCounts = {};
+  for(const h of hits) appCounts[h.app] = (appCounts[h.app]||0) + 1;
+  const topApp = Object.entries(appCounts).sort((a,b)=>b[1]-a[1])[0][0];
+
+  const details = document.createElement("details");
+  details.className = "hitsbox";
+  const summary = document.createElement("summary");
+  summary.textContent = `근거 ${hits.length}개 · ${lab(topApp)} 중심`;
+  details.append(summary);
+
+  const list = el("div","hits-list");
+  for(const h of hits){
+    const card=el("div","hit");
+    const head=el("div","hit-head");
+    const app=el("div","happ");
+    const sw=el("span","sw"); sw.style.background=colorVar(h.app);
+    app.append(sw, document.createTextNode(lab(h.app)));
+    head.append(app, el("span","hmeta", h.start.slice(5,16).replace("T"," ")+" · "+h.distance));
+    if(h.window) head.append(el("span","hwin", h.window));
+    if(h.ai_app) head.append(el("span","warn","AI 화면 · 재귀 오염 주의"));
+    card.append(head, el("div","hex", h.excerpt));
+    list.append(card);
+  }
+  details.append(list);
+  box.append(details);
 }
 
 // ---------- 대시보드 ----------
