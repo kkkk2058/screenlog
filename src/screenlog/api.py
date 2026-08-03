@@ -12,6 +12,9 @@
 실행: uv run uvicorn screenlog.api:app --reload
 """
 
+import asyncio
+import re
+import time
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -19,9 +22,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from screenlog import chat_history, summary_cache
 from screenlog.ask import ask_auto
 from screenlog.config import AI_APPS
+from screenlog.source import weekday_ko
 from screenlog.stats import build_stats, build_timeline
+from screenlog.summarize import summarize_day
 import json
 from fastapi.responses import StreamingResponse
 
@@ -53,6 +59,7 @@ class HistoryTurn(BaseModel):
 class AskRequest(BaseModel):
     question: str
     history: list[HistoryTurn] = []
+    conversation_id: str | None = None   # None이면 새 대화로 취급, 서버가 하나 발급한다
 
 
 @app.get("/")
@@ -65,6 +72,11 @@ def dashboard():
     return FileResponse(STATIC_DIR / "dashboard.html")
 
 
+@app.get("/explore")
+def explore():
+    return FileResponse(STATIC_DIR / "explore.html")
+
+
 @app.get("/api/stats")
 def api_stats():
     """대시보드용 집계. 본문 없이 숫자와 앱 이름만 나간다."""
@@ -75,6 +87,54 @@ def api_stats():
 def api_timeline(date: str):
     """하루치 리본 타임라인. date는 "YYYY-MM-DD"."""
     return build_timeline(date)
+
+
+# 오늘 날짜는 summary_cache가 원래 캐시 대상이 아니다(하루 종일 자라니까).
+# 그래서 /api/digest를 부를 때마다 오늘 몫만 매번 LLM을 새로 불러 4초 가까이
+# 걸렸다 — 새로고침할 때마다 "데이터를 다시 로딩하는 것처럼" 느려지던 원인이
+# 이거다. 디스크(summary_cache.sqlite)에는 안 넣고 이 프로세스 메모리에만
+# 짧게(3분) 붙잡아둔다 — 오후 활동이 반영되기까지 최대 3분 지연되는 정도의
+# 트레이드오프로 새로고침 지옥을 없앤다.
+_TODAY_DIGEST_TTL = 180
+_today_digest_cache = {}   # {date: (계산 시각, 텍스트)} — 자정 넘어가면 통째로 버린다
+
+
+async def _digest_text(date):
+    if summary_cache.is_cacheable_day(date):
+        return await summarize_day(date)   # 지난 날은 summary_cache가 이미 빠르다
+
+    now = time.monotonic()
+    cached = _today_digest_cache.get(date)
+    if cached and now - cached[0] < _TODAY_DIGEST_TTL:
+        return cached[1]
+
+    text = await summarize_day(date)
+    _today_digest_cache.clear()   # 날짜가 바뀌면(자정) 어제 항목은 의미 없다
+    _today_digest_cache[date] = (now, text)
+    return text
+
+
+@app.get("/api/digest")
+async def api_digest(n: int = 5):
+    """최근 n일의 하루 요약 — 홈 화면 "최근 기록" 피드용.
+
+    summarize_day()를 그대로 불러서 헤더줄("[date(요일)]")만 떼어낸다 —
+    지난 날이면 summary_cache가 이미 채워둔 걸 즉시 돌려주고, 오늘은
+    _digest_text()의 짧은 메모리 캐시를 거친다.
+
+    날짜 목록은 indexed_dates()로 따로 안 구한다 — 그것도 전체 이벤트를
+    훑는 함수라 build_stats()가 이미 하는 스캔을 한 번 더 하게 된다.
+    build_stats()는 캐시돼 있으니 그 결과의 dates를 그대로 재사용한다.
+    """
+    dates = build_stats()["dates"][-n:]
+
+    async def one(date):
+        text = await _digest_text(date)
+        body = re.sub(r"^\[.*?\]\s*", "", text, count=1)
+        return {"date": date, "weekday_kr": weekday_ko(date), "summary": body}
+
+    days = await asyncio.gather(*[one(d) for d in dates])
+    return {"days": list(reversed(days))}
 
 
 @app.post("/api/ask")
@@ -107,7 +167,14 @@ async def api_ask(req: AskRequest):
 
 @app.post("/api/ask/stream")
 async def api_ask_stream(req: AskRequest):
+    # conversation_id가 없으면 이 질문이 새 대화의 시작이다 — 여기서 만들어서
+    # 첫 이벤트로 클라이언트에 알려준다(사이드바에 표시될 id가 이거다).
+    conv_id = req.conversation_id or chat_history.create_conversation(req.question)
+    chat_history.add_message(conv_id, "user", req.question)
+
     async def event_generator():
+        yield f"data: {json.dumps({'type': 'conversation', 'id': conv_id}, ensure_ascii=False)}\n\n"
+        answer_parts = []
         try:
             # stream_ask_auto()가 route()로 라우팅하고 intent(검색/정리/비교/집계)에
             # 따라 ask_auto()와 같은 함수로 답을 만든 뒤 plan/hits/token/done
@@ -128,9 +195,26 @@ async def api_ask_stream(req: AskRequest):
                     payload = {"type": "hits", "hits": hits_out}
                 else:
                     payload = item   # token이나 done은 그대로
+                    if item["type"] == "token":
+                        answer_parts.append(item["text"])
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            # 토큰을 이어붙이면 답변 전문이 된다(검색 intent는 여러 조각,
+            # 정리/비교/집계는 한 조각 — ask.py 쪽 설계가 이미 그렇게 되어 있음).
+            chat_history.add_message(conv_id, "assistant", "".join(answer_parts))
         except Exception as e:
             error_payload = {"type": "error", "message": str(e)}
             yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/api/conversations")
+def api_conversations():
+    """왼쪽 사이드바 "이전 질문들 모음" 목록. 최근 대화 순."""
+    return {"conversations": chat_history.list_conversations()}
+
+
+@app.get("/api/conversations/{conversation_id}")
+def api_conversation_messages(conversation_id: str):
+    """그 대화를 다시 열었을 때 채팅창에 재생할 메시지 전체."""
+    return {"messages": chat_history.get_messages(conversation_id)}

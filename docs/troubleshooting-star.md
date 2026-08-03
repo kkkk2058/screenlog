@@ -555,3 +555,143 @@ RAG 고유의 구조적 함정이 그대로 재현된 것이다 — "faithfulnes
 > (데이터가 어딘가에 계속 쌓임)를 의심해야 하지만, 실사용량은 그대로인데
 > 캐시만 커진다면 반납 누락이고, 해당 프레임워크의 캐싱 할당자 문서를
 > 찾아보면 대개 `empty_cache()` 같은 탈출구가 있다.
+
+---
+
+## 11. 대시보드 첫 로딩이 데이터가 쌓일수록 느려지는 문제
+
+**Situation**
+대시보드에 처음 접속할 때 데이터가 올라오는 속도가 느리다는 사용자 보고가
+있었다. `db.sqlite`가 890MB(18,616개 이벤트)까지 커진 시점이었다.
+
+**Task**
+"느리다"는 증상 하나였지만, 대시보드 로딩 경로에 걸리는 함수가
+`get_collection()`(연결) → `build_stats()`(집계) 두 단계라 각 단계를
+따로 떼어 시간을 재야 어디가 병목인지 알 수 있었다.
+
+**Action**
+`time`으로 단계별 소요 시간을 직접 쟀다.
+
+```python
+t0 = time.time()
+col = get_collection()
+t1 = time.time()   # PersistentClient 연결: 4.25초
+
+metas = col.get(include=['metadatas'])['metadatas']
+t2 = time.time()   # 전체 metadata(18,616개) 조회: 2.28초
+```
+
+원인은 [index.py:52-58](../src/screenlog/index.py)의 `get_collection()`이
+호출될 때마다 `chromadb.PersistentClient(path=CHROMA_DIR)`로 **매번 클라이언트를
+새로 열고 있었다**는 것. 같은 파일의 `get_model()`([index.py:27-33](../src/screenlog/index.py))은
+전역 변수(`_model`)에 캐시해서 한 번만 로드하는데, `get_collection()`은 그 패턴을
+따르지 않고 있었다. `db.sqlite`가 커질수록 매번 여는 비용이 그대로 누적된다.
+
+`get_model()`과 동일한 패턴(모듈 전역 `_collection` 캐시)으로 고쳤다.
+
+**Result**
+
+| | 캐싱 전 | 캐싱 후 |
+|---|---|---|
+| 첫 호출 | 4.25초 | (프로세스 시작 후 1회만 발생) |
+| 이후 호출 | 4.25초(매번) | **0.000초** |
+
+서버(uvicorn) 프로세스가 살아있는 동안 클라이언트를 한 번만 열고 재사용하므로,
+서버를 껐다 켜지 않는 한 이 비용을 다시 치르지 않는다.
+
+**미해결로 남긴 것**: `stats.py`의 `build_stats()`는 여전히 매 요청마다
+전체 이벤트 metadata를 캐시 없이 다시 훑어서 집계한다([stats.py:87-90](../src/screenlog/stats.py)).
+지금은 집계 자체가 0.5초 수준으로 빠르지만, 이벤트 수가 계속 늘어나는
+구조라 이것도 언젠가 캐싱이나 증분 계산이 필요해질 것이다.
+
+> `get_model()`에서 이미 썼던 "무거운 리소스는 전역에 한 번만 캐시한다"는
+> 패턴이 같은 파일의 다른 함수(`get_collection()`)엔 안 적용돼 있었다.
+> 9·10번 항목의 교훈과 같은 모양이다 — **한 곳에서 세운 원칙이 다른
+> 함수에는 자동으로 안 따라간다.** 새 함수를 만들거나 기존 함수를 볼 때마다
+> "이것도 그 원칙을 지키고 있는가"를 따로 확인해야 한다.
+
+---
+
+## 12. 새로고침할 때마다 대시보드가 다시 느려지는 문제 — 11번에서 남겨둔 숙제 + 새로 발견한 두 겹
+
+**Situation**
+"브라우저 새로고침할 때마다 데이터 로딩을 다시 하는 것 같다, 그래서 느리다"는
+사용자 보고가 있었다. 11번 항목에서 이미 "`build_stats()`는 여전히 매 요청마다
+전체 metadata를 캐시 없이 다시 훑는다"를 미해결로 남겨뒀던 바로 그 지점이다.
+
+**Task**
+감으로 어디가 느린지 짚지 않고, 대시보드가 새로고침 시 실제로 호출하는
+엔드포인트 4개(`/api/stats`, `/api/digest`, `/api/timeline/{date}`,
+`/api/conversations`)를 `curl` + `time`으로 하나씩 재서 병목을 먼저 특정했다.
+
+**Action**
+
+1. **엔드포인트별 실측**으로 범인을 좁혔다.
+   ```
+   /api/digest?n=5           3.98초   ← 압도적으로 느림
+   /api/stats                0.51초
+   /api/timeline/2026-08-03  0.04초
+   /api/conversations        0.00초
+   ```
+
+2. **`/api/digest`가 4초 가까이 걸리는 원인**: "최근 기록" 카드가 매번
+   `summarize_day(오늘 날짜)`를 부르는데, `summary_cache.is_cacheable_day()`는
+   "오늘은 하루 종일 자라니까 캐시하지 않는다"는 원칙대로 오늘 날짜는 캐시를
+   아예 안 보고 **매번 실제 LLM 호출**을 한다. 새로고침 한 번 = LLM 호출 한 번.
+
+3. **11번에서 남겨둔 숙제를 처리했다**: `build_stats()`가 여전히 이벤트
+   18,000개+를 매번 `col.get(include=["metadatas"])`로 전량 조회해 Counter를
+   여러 번 순회하고 있었다. `col.count()`는 metadata를 안 읽고도 즉시 나오는
+   값이라, 지난번 계산 때의 개수와 같으면(=색인이 새로 안 돌았으면) 계산
+   결과를 그대로 재사용하도록 [stats.py:87-101](../src/screenlog/stats.py)에
+   캐시를 얹었다.
+
+4. **세 번째 원인은 계측 도중 우연히 드러났다.** `/api/digest`가 "최근 n일이
+   며칠인지" 알아내려고 `indexed_dates()`를 따로 불렀는데, 이 함수도
+   `col.get(include=["metadatas"])`로 전체를 또 스캔하고 있었다 — 3번에서
+   막 캐싱한 `build_stats()`와 완전히 같은 스캔을 한 번 더 하는 중복이었다.
+   `indexed_dates()`를 없애고 이미 캐시된 `build_stats()["dates"]`를 그대로
+   재사용하도록 고쳤다([api.py:129](../src/screenlog/api.py)).
+
+5. **오늘 날짜 LLM 호출(2번)은 디스크 캐시로 못 푼다** — "오늘은 캐시 안 함"
+   원칙 자체를 어기게 되기 때문이다. 대신 API 프로세스 메모리에만 3분짜리
+   짧은 캐시를 별도로 얹었다([api.py:98-114](../src/screenlog/api.py)).
+   ```python
+   _TODAY_DIGEST_TTL = 180
+   _today_digest_cache = {}   # {date: (계산시각, 텍스트)}
+
+   async def _digest_text(date):
+       if summary_cache.is_cacheable_day(date):
+           return await summarize_day(date)
+       now = time.monotonic()
+       cached = _today_digest_cache.get(date)
+       if cached and now - cached[0] < _TODAY_DIGEST_TTL:
+           return cached[1]
+       text = await summarize_day(date)
+       _today_digest_cache.clear()   # 자정 넘어가면 어제 항목은 버린다
+       _today_digest_cache[date] = (now, text)
+       return text
+   ```
+   `summary_cache.sqlite`(영구 저장)에는 손대지 않았다 — "오늘은 계속
+   자란다"는 설계 의도는 그대로 두고, 그 프로세스가 떠 있는 3분 동안만
+   같은 계산을 반복하지 않게 하는 얕은 캐시를 하나 더 얹은 것뿐이다.
+
+**Result**
+
+| | 수정 전 | 수정 후 |
+|---|---|---|
+| `/api/stats` | 1.70초(첫 호출도 느림) | **0.01초** |
+| `/api/digest?n=5` | 3.98초 | **0.03초**(캐시 만료 후 첫 호출도) |
+| 새로고침 체감 | 매번 4초+ | **0.03초대** |
+
+세 겹의 원인이 서로 다른 성격이었다 — 하나는 "완전히 안 바뀌었으면 재계산
+생략"(count 비교, 정확도 손실 없음), 하나는 "정확하게는 매번 새로 계산해야
+맞지만 몇 분의 오차는 감수한다"(TTL), 하나는 "이미 하고 있는 스캔을
+중복해서 또 하고 있었다"(재사용). 셋 다 같은 증상("느리다")으로 뭉뚱그려
+보였지만 원인과 해법은 전혀 달랐다.
+
+> 11번 항목이 "지금은 0.5초라 안 급하다"고 미뤄뒀던 캐싱이, 다른 문제
+> (오늘 날짜 LLM 재호출)와 겹치면서 사용자가 체감하는 순간에는 결국
+> 4초대로 합쳐져 있었다. **당장 안 급해 보여서 미뤄둔 성능 이슈도, 나중에
+> 다른 병목과 겹치면 그제서야 사용자에게 보이는 증상 하나로 뭉쳐서
+> 나타난다** — "지금은 괜찮다"와 "앞으로도 괜찮다"는 다른 말이다.

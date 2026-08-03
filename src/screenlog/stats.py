@@ -84,9 +84,22 @@ def build_timeline(date):
     }
 
 
+_stats_cache = {"count": None, "result": None}
+
+
 def build_stats():
-    """chroma에 있는 전체 이벤트를 훑어서 대시보드가 쓸 숫자를 만든다."""
+    """chroma에 있는 전체 이벤트를 훑어서 대시보드가 쓸 숫자를 만든다.
+
+    이벤트 전체(현재 18,000개대)를 매번 훑으면 새로고침마다 0.5초 정도가
+    그냥 나간다 — 근데 이 숫자들은 색인이 새로 돌 때만 바뀐다. col.count()는
+    메타데이터를 다 안 읽고도 바로 나오는 값이라, 그게 지난번과 같으면
+    데이터가 안 늘었다는 뜻이고 계산 결과를 그대로 재사용해도 된다.
+    """
     col = get_collection()
+    count = col.count()
+    if _stats_cache["result"] is not None and _stats_cache["count"] == count:
+        return _stats_cache["result"]
+
     metas = col.get(include=["metadatas"])["metadatas"]
 
     if not metas:
@@ -133,7 +146,7 @@ def build_stats():
     busiest = max(per_day, key=lambda d: d["frames"])
     top_app = apps[0]
 
-    return {
+    result = {
         "dates": dates,
         "apps": apps,
         "app_frames": dict(app_frames.most_common()),
@@ -155,3 +168,6 @@ def build_stats():
             "top_app_event_share": round(app_events[top_app] / len(metas) * 100),
         },
     }
+    _stats_cache["count"] = count
+    _stats_cache["result"] = result
+    return result

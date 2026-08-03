@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>screenlog</title>
+<title>screenlog · 물어보기</title>
 <style>
   :root{
     color-scheme: light;
@@ -29,20 +29,54 @@
   }
   *{ box-sizing:border-box; }
   body{ margin:0; background:var(--plane); color:var(--ink); font-family:var(--sans); line-height:1.5; -webkit-font-smoothing:antialiased; }
-  .wrap{ max-width:960px; margin:0 auto; padding:40px 24px 72px; }
+  .wrap{ max-width:1680px; margin:0 auto; padding:40px 32px 72px; }
 
-  header{ margin-bottom:24px; }
-  .eyebrow{ font-family:var(--mono); font-size:12px; letter-spacing:.06em; color:var(--muted); text-transform:uppercase; margin:0 0 10px; display:flex; gap:10px; align-items:center; }
-  .eyebrow .dot{ width:6px;height:6px;border-radius:50%;background:var(--accent); }
-  h1{ font-size:clamp(24px,4vw,34px); line-height:1.1; margin:0 0 8px; letter-spacing:-.02em; font-weight:650; }
-  .lede{ font-size:15px; color:var(--ink-2); margin:0; max-width:58ch; }
+  /* 대화 목록(왼쪽) / 챗봇 / 잔디·최근기록·앱별사용시간(오른쪽) 3단 배치.
+     min-width:0을 안 주면 그리드 아이템이 자식(잔디의 min-width:620px)의
+     내재 크기만큼 안 줄어들어서, 페이지 전체가 옆으로 밀린다(그리드 blowout).
+     챗봇이 메인이라 convlist/side는 좁게 잡는다 — 잔디가 620px보다 좁아지면
+     카드 안에서 가로 스크롤이 생기는데, 부가 정보라 스크롤 정도는 감수한다. */
+  .layout{ display:grid; grid-template-columns:240px minmax(0,1fr) 340px; gap:24px; align-items:start; }
+  @media(max-width:1100px){ .layout{ grid-template-columns:minmax(0,1fr) 340px; } .convlist{ display:none; } }
+  @media(max-width:900px){ .layout{ grid-template-columns:1fr; } }
+  .main, .side, .convlist{ min-width:0; }
 
-  .tiles{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:24px 0 20px; }
-  @media(max-width:720px){ .tiles{ grid-template-columns:repeat(2,1fr);} }
-  .tile{ background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; }
-  .tile .k{ font-family:var(--mono); font-size:11px; letter-spacing:.05em; color:var(--muted); text-transform:uppercase; }
-  .tile .v{ font-size:24px; font-weight:640; letter-spacing:-.02em; line-height:1.2; margin-top:2px; }
-  .tile .s{ font-size:12.5px; color:var(--muted); margin-top:3px; }
+  /* 대화 목록 접기/펼치기 — 토글이 wrap에 .no-convlist를 붙였다 뗐다 한다 */
+  .wrap.no-convlist .layout{ grid-template-columns:minmax(0,1fr) 340px; }
+  .wrap.no-convlist .convlist{ display:none; }
+
+  /* side는 부가 패널이라 카드 패딩/헤더를 더 압축한다 */
+  .side .card{ padding:14px 16px 16px; }
+  .side .card h2{ font-size:13.5px; }
+  .side{ display:flex; flex-direction:column; gap:12px; }
+
+  /* 대화 목록 사이드바 */
+  .convlist{ display:flex; flex-direction:column; gap:4px; }
+  .convnew{ display:flex; align-items:center; gap:8px; background:var(--surface); border:1px dashed var(--border);
+            border-radius:9px; padding:9px 12px; font-size:13px; color:var(--ink-2); cursor:pointer; margin-bottom:8px; }
+  .convnew:hover{ background:var(--surface-2); border-color:var(--baseline); }
+  .convitem{ padding:9px 10px; border-radius:8px; font-size:13px; color:var(--ink-2); cursor:pointer;
+             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .convitem:hover{ background:var(--surface-2); }
+  .convitem.active{ background:var(--surface-2); color:var(--ink); font-weight:600; }
+
+  /* 상단 네비게이션 줄 — 대화 목록 토글 + 페이지 탭 */
+  .navbar{ display:flex; align-items:center; gap:14px; margin:18px 0 26px; border-bottom:1px solid var(--border); }
+  .icon-btn{ background:none; border:0; color:var(--muted); cursor:pointer; padding:6px; border-radius:6px;
+             display:flex; align-items:center; margin-bottom:8px; }
+  .icon-btn:hover{ color:var(--ink); background:var(--surface-2); }
+  nav.topnav{ display:flex; gap:20px; margin:0; border-bottom:none; }
+  nav.topnav a{ font-family:var(--mono); font-size:12.5px; color:var(--muted); text-decoration:none; padding:0 0 10px; border-bottom:2px solid transparent; }
+  nav.topnav a:hover{ color:var(--ink-2); }
+  nav.topnav a.active{ color:var(--ink); border-bottom-color:var(--accent); font-weight:600; }
+
+  /* 채팅 시작 전 — 인사말 + 입력창을 세로 중앙에 놓는다. 질문을 하나라도
+     보내면(createTurn) .empty를 떼서 평소의 "로그 위 / 입력창 아래" 배치로
+     돌아간다. */
+  .chatshell.empty{ display:flex; flex-direction:column; justify-content:center; min-height:56vh; }
+  .chatshell.empty .chatlog{ display:none; }
+  .chatshell.empty .greeting{ display:block; text-align:center; font-size:21px; color:var(--ink-2); margin:0 0 20px; }
+  .chatshell:not(.empty) .greeting{ display:none; }
 
   section{ margin-top:16px; }
   .card{ background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:20px 22px 22px; }
@@ -51,23 +85,32 @@
   .card .sub{ font-size:12.5px; color:var(--muted); margin:2px 0 16px; }
   .card .hint{ font-family:var(--mono); font-size:11px; color:var(--muted); }
 
-  .legend{ display:flex; flex-wrap:wrap; gap:10px 16px; margin:2px 0 16px; }
-  .legend .li{ display:flex; align-items:center; gap:7px; font-size:12.5px; color:var(--ink-2); }
-  .sw{ width:11px; height:11px; border-radius:3px; flex:none; }
-
-  /* 질의 */
-  .qform{ display:flex; gap:10px; }
-  @media(max-width:560px){ .qform{ flex-direction:column; } }
-  #qinput{ flex:1; min-width:0; background:var(--surface-2); border:1px solid var(--border); border-radius:9px; padding:11px 13px; color:var(--ink); font-family:var(--sans); font-size:14px; }
-  #qinput:focus{ outline:2px solid var(--accent); outline-offset:1px; }
-  #qbtn{ background:var(--accent); color:#fff; border:0; border-radius:9px; padding:11px 20px; font-size:14px; font-weight:600; cursor:pointer; white-space:nowrap; }
-  #qbtn:disabled{ opacity:.5; cursor:default; }
   .qstatus{ font-family:var(--mono); font-size:12px; color:var(--muted); margin-top:10px; min-height:1em; }
   .qstatus.err{ color:#d03b3b; }
 
-  /* 채팅 로그 — 턴마다 사용자 말풍선 + 답변(plan/answer/hits)을 쌓는다 */
-  .chatlog{ display:flex; flex-direction:column; gap:22px; margin-bottom:16px; }
-  .chatlog:empty{ margin-bottom:0; }
+  /* 히어로 — 상단 고정형 질의 바 + 2단 그리드(잔디 / 앱별 사용 시간) */
+  .herobar{ display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--border);
+            border-radius:12px; padding:0 16px; height:52px; }
+  .herobar input{ flex:1; min-width:0; border:0; background:transparent; color:var(--ink); font-family:var(--sans); font-size:14.5px; }
+  .herobar input:focus{ outline:none; }
+  .herobar input::placeholder{ color:var(--muted); }
+  .herobar .ic{ color:var(--muted); flex:none; }
+  .herobar .kbd{ font-family:var(--mono); font-size:11.5px; color:var(--muted); border:1px solid var(--border); border-radius:6px; padding:2px 7px; flex:none; }
+
+  .digest-row{ display:flex; align-items:center; gap:14px; padding:11px 4px; border-top:1px solid var(--border); cursor:pointer; }
+  .digest-row:first-child{ border-top:0; }
+  .digest-row:hover{ background:var(--surface-2); border-radius:8px; }
+  .digest-date{ font-family:var(--mono); font-size:12px; color:var(--muted); min-width:56px; flex:none; line-height:1.4; }
+  .digest-text{ flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
+  .digest-line{ font-size:13px; line-height:1.5; color:var(--ink-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .digest-row .chev{ flex:none; color:var(--muted); font-size:15px; }
+
+  /* 채팅 로그 — 턴마다 사용자 말풍선 + 답변(plan/answer/hits)을 쌓는다.
+     입력창(herobar)은 항상 로그 아래 고정, 로그가 쌓이면 로그 안쪽만
+     스크롤되게 해서 입력창이 밀려 내려가지 않게 한다(챗봇 앱 표준 배치). */
+  .chatlog{ display:flex; flex-direction:column; gap:22px; }
+  .chatlog:empty{ margin:0; }
+  .chatlog:not(:empty){ max-height:78vh; overflow-y:auto; margin-bottom:14px; padding:2px 4px 2px 0; }
   .turn{ display:flex; flex-direction:column; gap:10px; }
   .msg-user{ align-self:flex-end; max-width:80%; background:var(--accent); color:#fff;
              padding:10px 14px; border-radius:14px 14px 4px 14px; font-size:14px;
@@ -144,28 +187,7 @@
   .cal-scale{ display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:11px; color:var(--muted); margin-top:12px; justify-content:flex-end; }
   .cal-scale .cell{ width:13px; height:13px; aspect-ratio:auto; }
 
-  /* 날짜별 스택 */
-  .days{ display:flex; flex-direction:column; gap:8px; }
-  .drow{ display:grid; grid-template-columns:64px 1fr 96px; align-items:center; gap:12px; padding:6px 8px; border-radius:9px;
-         cursor:pointer; border:1px solid transparent; }
-  .drow:hover{ background:var(--surface-2); }
-  .drow.sel{ background:var(--surface-2); border-color:var(--border); }
-
-  /* 하루 상세 리본 */
-  .ribbon-scroll{ overflow-x:auto; }
-  .ribbon{ position:relative; height:52px; min-width:620px; border-radius:8px; overflow:hidden; background:var(--surface-3); }
-  .blk{ position:absolute; top:0; bottom:0; box-shadow:inset -1px 0 0 0 var(--surface); }
-  .axis{ position:relative; min-width:620px; height:18px; margin-top:6px; }
-  .tick{ position:absolute; top:0; transform:translateX(-50%); font-family:var(--mono); font-size:10.5px; color:var(--muted); }
-  .tick::before{ content:""; position:absolute; top:-8px; left:50%; width:1px; height:5px; background:var(--baseline); }
-  .drow .dl{ font-family:var(--mono); font-size:12px; color:var(--ink-2); }
-  .drow .dl .wd{ color:var(--muted); margin-left:4px; }
-  .dstack{ height:18px; display:flex; border-radius:5px; overflow:hidden; background:var(--surface-3); }
-  .dstack span{ box-shadow: inset -1px 0 0 0 var(--surface); }
-  .drow .dr{ font-family:var(--mono); font-size:12px; text-align:right; font-variant-numeric:tabular-nums; }
-  .drow .dr .u{ color:var(--muted); font-size:11px; }
-
-  /* 편중 막대 */
+  /* 막대(앱별 사용 시간) */
   .bars{ display:flex; flex-direction:column; gap:10px; }
   .bar-row{ display:grid; grid-template-columns:92px 1fr 72px; align-items:center; gap:12px; }
   .bar-row .name{ font-size:13px; color:var(--ink-2); text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -173,68 +195,68 @@
   .fill{ height:100%; border-radius:0 4px 4px 0; }
   .bar-row .val{ font-family:var(--mono); font-size:12.5px; text-align:right; font-variant-numeric:tabular-nums; }
   .bar-row .val .u{ color:var(--muted); font-size:11px; }
-  .insight{ background:var(--surface-2); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:8px; padding:13px 15px; font-size:13.5px; color:var(--ink-2); line-height:1.55; margin-top:14px; }
-  .insight b{ color:var(--ink); font-weight:600; }
 
   #tip{ position:fixed; z-index:50; pointer-events:none; opacity:0; transition:opacity .1s; background:var(--ink); color:var(--plane); font-size:12px; padding:7px 10px; border-radius:7px; box-shadow:0 6px 20px rgba(0,0,0,.28); }
   #tip .tt{ font-weight:600; }
   #tip .td{ font-family:var(--mono); opacity:.82; margin-top:2px; }
-  footer{ margin-top:28px; font-family:var(--mono); font-size:11px; color:var(--muted); line-height:1.7; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <p class="eyebrow"><span class="dot"></span> screenlog <span id="daterange"></span></p>
-    <h1>내 화면에 물어보기</h1>
-    <p class="lede">screenpipe가 쌓은 화면 기록을 검색해서 답합니다. 질문을 어떻게 해석했는지(plan)와 무엇을 근거로 삼았는지(hits)를 같이 보여줍니다.</p>
-  </header>
+  <div class="navbar">
+    <button class="icon-btn" id="convtoggle" type="button" title="대화 목록" aria-label="대화 목록 토글">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="9" y1="4" x2="9" y2="20"></line>
+      </svg>
+    </button>
+    <nav class="topnav">
+      <a href="/dashboard" class="active">물어보기</a>
+      <a href="/explore">탐색</a>
+    </nav>
+  </div>
 
-  <div class="tiles" id="tiles"></div>
+  <div class="layout">
+    <aside class="convlist" id="convlist">
+      <div class="convnew" id="convnew">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        새 채팅
+      </div>
+      <div id="convitems"></div>
+    </aside>
 
-  <section class="card">
-    <div class="card-head"><h2>물어보기</h2><span class="hint">plan · answer · hits</span></div>
-    <p class="sub">답이 이상하면 plan을 먼저 보세요 — 라우팅이 틀렸는지 검색이 틀렸는지 거기서 갈립니다. 대화는 이어서 물어볼 수 있어요("그날은?" 등) — 새로고침하면 초기화됩니다.</p>
-    <div class="chatlog" id="chatlog"></div>
-    <form id="qform" class="qform">
-      <input id="qinput" type="text" autocomplete="off" autofocus
-             placeholder="예: 카카오톡에서 무슨 얘기 했지? · 어제 뭐 했어? · 이번 주 정리해줘">
-      <button type="submit" id="qbtn">질의</button>
-    </form>
-    <div class="qstatus" id="qstatus"></div>
-  </section>
+    <div class="main">
+      <div class="chatshell empty" id="chatshell">
+        <div class="greeting" id="greeting">오늘은 뭘 하셨나요?</div>
+        <div class="chatlog" id="chatlog"></div>
+        <form id="qform" class="herobar">
+          <svg class="ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <input id="qinput" type="text" autocomplete="off" autofocus
+                 placeholder="무엇이든 물어보세요 — 어제 뭐 했지? · 이번 주 정리해줘">
+          <span class="kbd">Enter</span>
+          <button type="submit" id="qbtn" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;">질의</button>
+        </form>
+        <div class="qstatus" id="qstatus"></div>
+      </div>
+    </div>
 
-  <section class="card">
-    <div class="card-head"><h2>활동 리듬</h2><span class="hint" id="cal-hint"></span></div>
-    <p class="sub">날짜 × 시각 격자. 진할수록 그 시간에 화면을 많이 썼어요 — 빈 새벽이 수면입니다.</p>
-    <div class="cal-scroll"><div class="cal" id="cal"></div></div>
-    <div class="cal-scale">적음 <span class="cell" data-l="0"></span><span class="cell" data-l="1"></span><span class="cell" data-l="2"></span><span class="cell" data-l="3"></span><span class="cell" data-l="4"></span> 많음</div>
-  </section>
+    <aside class="side">
+      <section class="card">
+        <div class="card-head"><h2>활동 잔디</h2><span class="hint" id="cal-hint"></span></div>
+        <div class="cal-scroll"><div class="cal" id="cal"></div></div>
+        <div class="cal-scale">적음 <span class="cell" data-l="0"></span><span class="cell" data-l="1"></span><span class="cell" data-l="2"></span><span class="cell" data-l="3"></span><span class="cell" data-l="4"></span> 많음</div>
+      </section>
 
-  <section class="card">
-    <div class="card-head"><h2>날짜별 앱 사용</h2><span class="hint">막대를 누르면 그날 상세로</span></div>
-    <p class="sub">막대 길이는 그날 캡처된 프레임 수, 색은 앱입니다.</p>
-    <div class="legend" id="legend"></div>
-    <div class="days" id="days"></div>
-  </section>
+      <section class="card">
+        <div class="card-head"><h2>최근 기록</h2><span class="hint">날짜를 누르면 그날 얘기를 이어서 물어요</span></div>
+        <div class="digest" id="digest"></div>
+      </section>
 
-  <section class="card">
-    <div class="card-head"><h2 id="detail-title">하루 상세</h2><span class="hint" id="detail-meta"></span></div>
-    <p class="sub">앱 전환 리듬(리본)과 앱별 사용 시간. 캡처가 1장뿐인 이벤트가 93%라
-       시작·끝이 같으므로, 다음 이벤트가 시작될 때까지 그 화면을 봤다고 봅니다(공백 2분 초과는 자리비움으로 제외).</p>
-    <div class="ribbon-scroll"><div class="ribbon" id="ribbon"></div><div class="axis" id="axis"></div></div>
-    <div style="height:16px"></div>
-    <div class="bars" id="appbars"></div>
-  </section>
-
-  <section class="card">
-    <div class="card-head"><h2>검색 후보 편중</h2><span class="hint" id="conc-hint"></span></div>
-    <p class="sub">어느 앱이 검색 후보(이벤트)를 독식하는지 — 앱 필터가 왜 필요한지의 근거입니다.</p>
-    <div class="bars" id="conc"></div>
-    <div class="insight" id="conc-insight"></div>
-  </section>
-
-  <footer id="footer"></footer>
+      <section class="card">
+        <div class="card-head"><h2>앱별 사용 시간</h2><span class="hint" id="todaybars-date"></span></div>
+        <div class="bars" id="todaybars"></div>
+      </section>
+    </aside>
+  </div>
 </div>
 
 <div id="tip"><div class="tt"></div><div class="td"></div></div>
@@ -257,19 +279,35 @@ function moveTip(e){ const p=14; let x=e.clientX+p,y=e.clientY+p; const r=tip.ge
   tip.style.left=x+"px"; tip.style.top=y+"px"; }
 function bindTip(n,t,d){ n.addEventListener("mouseenter",e=>showTip(e,t,d)); n.addEventListener("mousemove",moveTip); n.addEventListener("mouseleave",()=>tip.style.opacity=0); }
 
-// ---------- 질의 (채팅 로그) ----------
-const qform=$("#qform"), qinput=$("#qinput"), qbtn=$("#qbtn"), qstatus=$("#qstatus"), chatlog=$("#chatlog");
+// ---------- 대화 목록 사이드바 토글 ----------
+// 접힌 상태를 localStorage에 기억해서 새로고침해도 유지되게 한다.
+const wrapEl=$(".wrap"), convtoggle=$("#convtoggle");
+if(localStorage.getItem("convlist-collapsed") === "1") wrapEl.classList.add("no-convlist");
+convtoggle.addEventListener("click", ()=>{
+  wrapEl.classList.toggle("no-convlist");
+  localStorage.setItem("convlist-collapsed", wrapEl.classList.contains("no-convlist") ? "1" : "0");
+});
 
-// 멀티턴 대화 기록. 서버는 무상태라 브라우저가 들고 있다가 매 질문마다 최근
-// 몇 턴만 같이 보낸다 — "그날"/"더 자세히" 같은 팔로우업을 풀어내는 용도.
-// 새로고침하면 날아감(로컬 개인용 도구라 이 정도 트레이드오프는 괜찮음).
-const CONV_HISTORY = [];
+// ---------- 질의 (채팅 로그) ----------
+const qform=$("#qform"), qinput=$("#qinput"), qbtn=$("#qbtn"), qstatus=$("#qstatus"),
+      chatlog=$("#chatlog"), chatshell=$("#chatshell");
+
+// 멀티턴 대화 기록. 서버로는 최근 몇 턴만 같이 보낸다 — "그날"/"더 자세히" 같은
+// 팔로우업을 풀어내는 용도. let인 이유: 지난 대화를 불러올 때(loadConversation)
+// 통째로 새 배열로 바꿔치기한다.
+let CONV_HISTORY = [];
 const HISTORY_SEND_TURNS = 5;   // 서버로 보내는 최근 턴 수
 const HISTORY_KEEP_TURNS = 10;  // 브라우저가 기억해두는 턴 수(보내는 것보다 넉넉히)
+
+// 지금 이어가고 있는 대화 id. null이면 "아직 서버에 대화가 안 만들어짐"이라,
+// 서버가 첫 질문을 받을 때 하나 발급해서 SSE로 돌려준다(askStream에서 채움).
+let CURRENT_CONV_ID = null;
 
 // 질문마다 채팅 로그에 새 턴(사용자 말풍선 + 답변 영역)을 쌓는다. 이전 답변은
 // 안 지워지고 계속 쌓이는 게 이전(질문 하나 = 답변 영역 하나 덮어쓰기)과의 차이.
 function createTurn(question){
+  chatshell.classList.remove("empty");   // 첫 턴이 생기는 순간 센터드 배치를 풀고 평소 배치로
+
   const turn = el("div","turn");
   turn.append(el("div","msg-user", question));
 
@@ -281,7 +319,7 @@ function createTurn(question){
   turn.append(bot);
 
   chatlog.append(turn);
-  turn.scrollIntoView({behavior:"smooth", block:"start"});
+  chatlog.scrollTop = chatlog.scrollHeight;   // 새 턴은 로그 안쪽 스크롤 바닥으로
   return {badges, answer, hits};
 }
 
@@ -312,7 +350,10 @@ async function askStream(question, els){
   const res = await fetch("/api/ask/stream", {
     method:"POST",
     headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({question, history: CONV_HISTORY.slice(-HISTORY_SEND_TURNS)}),
+    body:JSON.stringify({
+      question, history: CONV_HISTORY.slice(-HISTORY_SEND_TURNS),
+      conversation_id: CURRENT_CONV_ID,
+    }),
   });
   if(!res.ok) throw new Error("서버 오류 "+res.status);
 
@@ -346,9 +387,11 @@ async function askStream(question, els){
         const step = Math.max(TYPE_MIN, Math.ceil(remaining / TYPE_TICKS));
         displayed += pending.slice(displayed.length, displayed.length + step);
         renderAnswer(els, displayed, true);   // true = 아직 쓰는 중 -> 커서 표시
+        chatlog.scrollTop = chatlog.scrollHeight;   // 답이 길어지는 동안 계속 바닥에 붙어있게
       }else if(networkDone){
         clearInterval(timer);
         renderAnswer(els, displayed, false);  // 다 끝남 -> 커서 제거
+        chatlog.scrollTop = chatlog.scrollHeight;
         resolve();
       }
     }, TYPE_MS);
@@ -368,7 +411,13 @@ async function askStream(question, els){
         if(!part.startsWith("data: ")) continue;
         const payload = JSON.parse(part.slice(6));
 
-        if(payload.type === "plan"){
+        if(payload.type === "conversation"){
+          // 서버가 새 대화면 여기서 처음 id를 발급해 알려준다. 사이드바 목록도
+          // 새 항목이 생겼으니(또는 기존 항목이 맨 위로 올라왔으니) 새로고침한다.
+          const isNew = CURRENT_CONV_ID !== payload.id;
+          CURRENT_CONV_ID = payload.id;
+          if(isNew) loadConversations();
+        }else if(payload.type === "plan"){
           renderPlan(els, payload.plan);
         }else if(payload.type === "hits"){
           renderHits(els, payload.hits);
@@ -545,27 +594,111 @@ function renderHits(els, hits){
   box.append(details);
 }
 
-// ---------- 대시보드 ----------
+// ---------- 대화 목록 (왼쪽 사이드바) ----------
+const convitems=$("#convitems");
+
+async function loadConversations(){
+  const data = await fetch("/api/conversations").then(r=>r.json());
+  convitems.innerHTML = "";
+  data.conversations.forEach(c=>{
+    const item = el("div", "convitem" + (c.id===CURRENT_CONV_ID ? " active" : ""), c.title);
+    item.addEventListener("click", ()=>openConversation(c.id));
+    convitems.append(item);
+  });
+}
+loadConversations();
+
+// 저장된 대화를 다시 열어서 채팅창에 그대로 재생한다. plan/hits는 애초에
+// 저장 대상이 아니라(chat_history.py 주석 참고) 배지/근거 없이 답변 텍스트만
+// 다시 그린다 — 팔로우업 맥락(CONV_HISTORY)은 그대로 복원되므로 이어서
+// 질문하는 데는 지장이 없다.
+async function openConversation(id){
+  if(id === CURRENT_CONV_ID) return;
+  const data = await fetch(`/api/conversations/${id}`).then(r=>r.json());
+
+  CURRENT_CONV_ID = id;
+  chatlog.innerHTML = "";
+  CONV_HISTORY = [];
+  chatshell.classList.remove("empty");
+
+  const msgs = data.messages;
+  for(let i=0; i<msgs.length; i+=2){
+    const question = msgs[i]?.content ?? "";
+    const answer = msgs[i+1]?.content ?? "";
+    const els = createTurn(question);
+    renderAnswer(els, answer, false);
+    els.hits.innerHTML = "";
+    if(msgs[i+1]) CONV_HISTORY.push({question, answer});
+  }
+  if(CONV_HISTORY.length > HISTORY_KEEP_TURNS) CONV_HISTORY = CONV_HISTORY.slice(-HISTORY_KEEP_TURNS);
+
+  document.querySelectorAll(".convitem.active").forEach(n=>n.classList.remove("active"));
+  loadConversations();   // active 표시 갱신
+}
+
+$("#convnew").addEventListener("click", ()=>{
+  CURRENT_CONV_ID = null;
+  CONV_HISTORY = [];
+  chatlog.innerHTML = "";
+  chatshell.classList.add("empty");
+  document.querySelectorAll(".convitem.active").forEach(n=>n.classList.remove("active"));
+  qinput.focus();
+});
+
+// ---------- 최근 기록 ----------
+// 날짜별 하루 요약 피드. summarize_day()가 만든 "* HH시MM분 - 내용" 불릿을
+// /api/digest로 그대로 받아온다 — 서버는 안 건드리고, 여기서 한 줄로 뭉개던
+// 걸 상위 몇 개만 짧은 줄로 나눠 보여주는 걸로 바꾼다(가독성 문제라 LLM을
+// 더 부르지 않고 파싱만으로 해결).
+const DIGEST_LINES = 3;   // 카드 하나에 보여줄 항목 수
+
+// "* 09시 04분 - 내용." / "* 22시 19분 ~ 22시 30분 - 내용." 한 줄에서
+// 시각(단일 또는 범위) 프리픽스를 떼고 내용만 남긴다.
+const TIME_PREFIX = /^\d{1,2}시\s?\d{1,2}분(\s*~\s*\d{1,2}시\s?\d{1,2}분)?\s*-\s*/;
+function bulletText(line){
+  return line.replace(/^\*\s*/, "").replace(TIME_PREFIX, "").trim();
+}
+
+async function loadDigest(){
+  const box=$("#digest");
+  const data = await fetch("/api/digest?n=5").then(r=>r.json());
+  box.innerHTML="";
+  if(!data.days.length){ box.append(el("div","hint","기록 없음")); return; }
+  data.days.forEach(d=>{
+    const row=el("div","digest-row");
+    const [ , mo, da ] = d.date.split("-");
+    const date=el("div","digest-date");
+    date.innerHTML=`${+mo}.${+da}<br><span style="color:var(--muted)">${esc(d.weekday_kr)}</span>`;
+
+    const bullets = d.summary.split("\n").map(l=>l.trim()).filter(l=>l.startsWith("*"));
+    const text=el("div","digest-text");
+    if(!bullets.length){
+      text.append(el("div","digest-line", d.summary.trim() || "기록 없음"));
+    }else{
+      bullets.slice(0, DIGEST_LINES).forEach(b=> text.append(el("div","digest-line", bulletText(b))));
+      if(bullets.length > DIGEST_LINES){
+        text.append(el("div","digest-line", `그 외 ${bullets.length - DIGEST_LINES}건 더`));
+      }
+    }
+
+    row.append(date, text, el("div","chev","›"));
+    // 클릭하면 그 날짜에 대해 물어본 것처럼 채팅으로 이어간다 — 카드가
+    // 곧 질문의 지름길이 되게 하는 것이 핵심(잔디 클릭과 같은 패턴).
+    row.addEventListener("click", ()=>{
+      qinput.value = `${+mo}월 ${+da}일에 뭐 했어?`;
+      qform.requestSubmit();
+    });
+    box.append(row);
+  });
+}
+loadDigest();
+
+// ---------- 히어로(잔디 + 앱별 사용 시간) ----------
 (async ()=>{
   const D = await fetch("/api/stats").then(r=>r.json());
-  if(!D.dates.length){ $("#footer").textContent="색인된 이벤트가 없습니다."; return; }
+  if(!D.dates.length){ qinput.placeholder="색인된 이벤트가 없습니다"; return; }
 
   D.apps.forEach((a,i)=>{ APP_SLOT[a] = i<8 ? `var(--app-${i+1})` : "var(--muted)"; });
-  const TOP=D.apps.slice(0,8), TOPSET=new Set(TOP);
-  const foldApp = a => TOPSET.has(a) ? a : "기타";
-
-  $("#daterange").textContent = `· ${D.dates[0]} ~ ${D.dates.at(-1)} · ${D.overall.day_count}일`;
-
-  // tiles
-  const O=D.overall;
-  const tiles=[
-    {k:"검색 후보", v:O.total_events.toLocaleString(), s:`이벤트 · ${O.total_frames.toLocaleString()} 프레임`},
-    {k:"기간", v:O.day_count+"일", s:`가장 바쁜 날 ${O.busiest_day.slice(5)}`},
-    {k:"1위 앱", v:lab(O.top_app), s:`${O.top_app_frames.toLocaleString()} 프레임`},
-    {k:"후보 편중", v:O.top_app_event_share+"%", s:`${lab(O.top_app)}가 차지`},
-  ];
-  const tilesEl=$("#tiles");
-  tiles.forEach(t=>{ const c=el("div","tile"); c.append(el("div","k",t.k), el("div","v",t.v), el("div","s",t.s)); tilesEl.append(c); });
 
   // 잔디
   const cellMap={};
@@ -596,116 +729,28 @@ function renderHits(els, hits){
     sw.style.background = l===0 ? "var(--surface-3)" : `color-mix(in srgb, var(--accent) ${[0,30,52,74,100][l]}%, transparent)`;
   });
 
-  // legend
-  const legend=$("#legend");
-  const legendApps = D.apps.length>8 ? [...TOP,"기타"] : TOP;
-  legendApps.forEach(a=>{ const li=el("div","li"); const sw=el("span","sw"); sw.style.background=colorVar(a);
-    li.append(sw, el("span",null,lab(a))); legend.append(li); });
-
-  // 날짜별 스택
-  const daysEl=$("#days");
-  const maxFrames=Math.max(...D.per_day.map(d=>d.frames),1);
-  D.per_day.forEach(d=>{
-    const row=el("div","drow");
-    const dl=el("div","dl"); dl.innerHTML=`${esc(d.date.slice(5))}<span class="wd">${esc(d.weekday_kr)}</span>`;
-
-    // 상위 8개 밖의 앱은 '기타'로 접어서 색이 무한정 늘어나지 않게 한다.
-    const folded={};
-    for(const [a,f] of Object.entries(d.app_frames)) { const k=foldApp(a); folded[k]=(folded[k]||0)+f; }
-
-    const stack=el("div","dstack");
-    stack.style.width=(d.frames/maxFrames*100)+"%";
-    Object.entries(folded).sort((a,b)=>b[1]-a[1]).forEach(([a,f])=>{
-      const seg=el("span"); seg.style.width=(f/d.frames*100)+"%"; seg.style.background=colorVar(a);
-      bindTip(seg, `${lab(a)} · ${d.date.slice(5)}`, `${f} 프레임`);
-      stack.append(seg);
-    });
-    const wrap=el("div"); wrap.append(stack);
-    const dr=el("div","dr"); dr.innerHTML=`${d.frames.toLocaleString()}<span class="u"> 프레임</span>`;
-    row.append(dl,wrap,dr);
-
-    // 날짜를 DOM에 직접 붙여둔다. 인덱스로 행을 찾으면 렌더 순서가 바뀔 때 어긋난다.
-    row.dataset.date = d.date;
-    row.addEventListener("click", ()=>selectDay(d));
-    daysEl.append(row);
-  });
-
-  function selectDay(day){
-    document.querySelectorAll(".drow.sel").forEach(r=>r.classList.remove("sel"));
-    const row = daysEl.querySelector(`.drow[data-date="${day.date}"]`);
-    if(row) row.classList.add("sel");
-    loadTimeline(day);
-  }
-
-  // ---------- 하루 상세 (리본) ----------
   const fmtMin = sec => { const m=Math.round(sec/60); const h=Math.floor(m/60);
     return h ? `${h}시간 ${m%60}분` : `${m}분`; };
-  const hhmm = sec => `${pad2(Math.floor(sec/3600))}:${pad2(Math.floor(sec%3600/60))}`;
 
-  async function loadTimeline(day){
-    const t = await fetch(`/api/timeline/${day.date}`).then(r=>r.json());
-    const ribbon=$("#ribbon"), axis=$("#axis"), bars=$("#appbars");
-    ribbon.innerHTML=""; axis.innerHTML=""; bars.innerHTML="";
-
-    $("#detail-title").textContent = `${day.date} (${day.weekday_kr})`;
-
-    if(!t.blocks.length){ $("#detail-meta").textContent="기록 없음"; return; }
-
-    // 리본의 좌우 끝은 그날 첫 활동 ~ 마지막 활동. 하루 24시간을 다 그리면
-    // 활동이 없는 새벽이 화면의 절반을 먹는다.
-    const from=t.blocks[0].start_sec, to=t.blocks.at(-1).end_sec, span=to-from;
-    const totalSec=Object.values(t.app_seconds).reduce((a,b)=>a+b,0);
-    $("#detail-meta").textContent=`${hhmm(from)} ~ ${hhmm(to)} · 체류 ${fmtMin(totalSec)}`;
-
-    for(const b of t.blocks){
-      const blk=el("div","blk");
-      blk.style.left=((b.start_sec-from)/span*100)+"%";
-      blk.style.width=Math.max((b.end_sec-b.start_sec)/span*100, 0.2)+"%";
-      blk.style.background=colorVar(b.app);
-      bindTip(blk, lab(b.app), `${hhmm(b.start_sec)} ~ ${hhmm(b.end_sec)}`);
-      ribbon.append(blk);
-    }
-
-    // 눈금은 정시마다. 폭이 좁으면 2~3시간 간격으로 띄운다.
-    const step = span > 6*3600 ? 2 : 1;
-    for(let h=Math.ceil(from/3600); h*3600<=to; h+=step){
-      const tick=el("div","tick", h+"시");
-      tick.style.left=((h*3600-from)/span*100)+"%";
-      axis.append(tick);
-    }
-
-    const maxSec=Math.max(...Object.values(t.app_seconds),1);
-    Object.entries(t.app_seconds).forEach(([a,sec])=>{
-      if(sec < 60) return;                     // 1분 미만은 표에서 뺀다
+  // 최근 날짜의 상위 5개 앱만 압축해서 보여준다. "탐색" 페이지의 하루 상세와
+  // 데이터 출처(timeline API)는 같지만, 저건 아무 날이나 골라 보는 용도고
+  // 이건 최근 날짜 고정 요약용이라 분리했다.
+  async function loadTodayBars(date){
+    const t = await fetch(`/api/timeline/${date}`).then(r=>r.json());
+    const box=$("#todaybars"); box.innerHTML="";
+    $("#todaybars-date").textContent = date.slice(5).replace("-",".");
+    const entries = Object.entries(t.app_seconds).filter(([,s])=>s>=60).sort((a,b)=>b[1]-a[1]).slice(0,5);
+    if(!entries.length){ box.append(el("div","hint","기록 없음")); return; }
+    const maxSec = entries[0][1];
+    entries.forEach(([a,sec])=>{
       const row=el("div","bar-row");
       const track=el("div","track"); const fill=el("div","fill");
       fill.style.width=(sec/maxSec*100)+"%"; fill.style.background=colorVar(a); track.append(fill);
       const val=el("div","val"); val.textContent=fmtMin(sec);
-      row.append(el("div","name",lab(a)), track, val); bars.append(row);
+      row.append(el("div","name",lab(a)), track, val); box.append(row);
     });
   }
-
-  // 처음엔 가장 바쁜 날을 열어둔다. 빈 리본으로 시작하면 이 섹션이 뭘 하는지 안 보인다.
-  selectDay(D.per_day.find(d=>d.date===O.busiest_day) || D.per_day.at(-1));
-
-  // 편중
-  const conc=$("#conc");
-  const concMax=Math.max(...Object.values(D.app_events),1);
-  Object.entries(D.app_events).slice(0,8).forEach(([a,n])=>{
-    const row=el("div","bar-row");
-    const track=el("div","track"); const fill=el("div","fill");
-    fill.style.width=(n/concMax*100)+"%"; fill.style.background=colorVar(a); track.append(fill);
-    const val=el("div","val"); val.innerHTML=`${n.toLocaleString()}<span class="u"> 개</span>`;
-    row.append(el("div","name",lab(a)), track, val); conc.append(row);
-  });
-  $("#conc-hint").textContent=`이벤트 ${O.total_events.toLocaleString()}개`;
-  $("#conc-insight").innerHTML =
-    `<b>${esc(lab(O.top_app))}</b>가 검색 후보의 <b>${O.top_app_event_share}%</b>를 차지합니다. ` +
-    `앱 이름은 임베딩 공간에 축이 없어서, 필터 없이 검색하면 후보가 많은 앱이 상위를 독식합니다 — ` +
-    `그래서 라우팅이 <b>app</b> 필터를 먼저 뽑습니다.`;
-
-  $("#footer").textContent =
-    `이벤트 ${O.total_events.toLocaleString()}개 · 프레임 ${O.total_frames.toLocaleString()}개 · ${D.dates[0]} ~ ${D.dates.at(-1)} · 로컬에서만 실행됩니다`;
+  loadTodayBars(D.dates.at(-1));
 })();
 </script>
 </body>
