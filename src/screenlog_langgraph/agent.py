@@ -2,9 +2,18 @@
 "복합 질문"만 여기로 떨어져서 tool-calling(ReAct) 루프를 탄다.
 
 graph.py의 고정 분기는 그대로 둔다. 이 파일은 새 경로 하나를 추가할 뿐이다:
-    route() 이후 별도의 "복합 질문인가?" 판별을 한 번 더 거치고,
-    복합이면 여기 정의된 도구 4개(검색/집계/정리/비교) 중 필요한 걸
-    LLM이 스스로 골라 여러 번 부르게 한다.
+    route()가 뽑아준 plan["compound"]를 보고, 복합이면 여기 정의된 도구
+    4개(검색/집계/정리/비교) 중 필요한 걸 LLM이 스스로 골라 여러 번 부르게
+    한다.
+
+복합 판별은 처음엔 route()와 별개인 전용 LLM 호출(is_compound())이었다.
+근데 그러면 질문 하나마다 route() 1번 + 판별 1번, 최소 LLM 호출이 2번씩
+든다 — route()가 이미 질문을 통째로 분석하는 김에 "이거 복합이야?"까지
+같은 호출에서 답하게 하면 질문당 1회를 아낄 수 있다(router.py의
+ROUTE_PROMPT에 compound 필드 추가, 트러블슈팅 문서 참고). 그래서 여기
+classify 노드는 route()를 직접 부르고, 그 결과(plan)를 고정 경로에도
+그대로 넘겨서(graph.py의 route 노드가 재계산 안 하도록) LLM 호출이 한
+번도 중복되지 않게 했다.
 
 도구는 새로 로직을 짜지 않는다 — screenlog.ask.ask() / screenlog.summarize.*를
 그대로 감싼 것뿐이다. 그래서 "집계는 LLM이 세지 않고 count_range()로 직접
@@ -29,53 +38,12 @@ from langgraph.prebuilt import create_react_agent
 
 from screenlog.ask import ask as _ask
 from screenlog.config import API_KEY, BASE_URL, CHAT_MODEL, RETRIEVE_K
-from screenlog.router import _APP_HINT, _SITE_HINT, _expand_period, _format_history
+from screenlog.router import _APP_HINT, _SITE_HINT, _expand_period, _format_history, route
 from screenlog.source import LOCAL_TZ, weekday_ko
 from screenlog.summarize import compare_range as _compare_range
 from screenlog.summarize import count_range as _count_range
 from screenlog.summarize import format_count as _format_count
 from screenlog.summarize import summarize_range as _summarize_range
-
-# --- 복합 질문 판별 ------------------------------------------------------
-# route()의 intent 스키마(검색/정리/비교/집계 enum)는 원본과 공유하는
-# 계약이라 여기서 다섯 번째 값을 끼워 넣지 않는다. 대신 route() 결과와는
-# 별도로, 훨씬 가벼운 예/아니오 판별 하나를 추가로 둔다 — "이 질문이 검색
-# /정리/비교/집계 중 하나로 충분히 답변되는가?"만 묻는다.
-_COMPOUND_CHECK_PROMPT = """질문 하나를 보고, 아래 네 방식 중 "하나만" 적용해서
-완전히 답할 수 있는지 판단해라.
-
-    검색 — 기간 안의 특정 내용/대화/키워드를 찾는다
-    정리 — 기간 안에 있었던 일 전반을 그대로 보여준다
-    비교 — 기간 사이의 차이나 경향을 판단한다
-    집계 — 사용 횟수를 센다
-
-"저번주 정리하고 이번주랑 비교"처럼 두 방식이 순서대로 필요하거나,
-"이번주 유튜브 몇 번 봤는지랑 어떤 영상 봤는지 같이 알려줘"처럼 집계와
-검색이 한 질문에 같이 필요하면 복합이다.
-
-네 방식 중 하나로 충분하면 복합이 아니다 — 애매해도 우선 아니라고 답해라
-(비용이 더 드는 쪽은 틀렸을 때 손해가 크다).
-
-질문: {question}"""
-
-_compound_llm = ChatOpenAI(model=CHAT_MODEL, api_key=API_KEY, base_url=BASE_URL, temperature=0)
-_compound_schema = {
-    "title": "compound_check",
-    "type": "object",
-    "properties": {"is_compound": {"type": "boolean"}},
-    "required": ["is_compound"],
-    "additionalProperties": False,
-}
-_compound_structured_llm = _compound_llm.with_structured_output(_compound_schema, method="json_schema", strict=True)
-
-
-async def is_compound(question: str) -> bool:
-    try:
-        result = await _compound_structured_llm.ainvoke(_COMPOUND_CHECK_PROMPT.format(question=question))
-    except Exception:
-        return False  # 판별 자체가 실패하면 기존 고정 경로(더 검증된 쪽)로 보낸다
-    return bool(result.get("is_compound"))
-
 
 # --- 도구 4개: 기존 함수를 감싸기만 한다 ----------------------------------
 # 날짜는 도구 경계에서 "YYYY-MM-DD 문자열 쌍"으로 받는다 — LLM이 채우기
@@ -204,21 +172,22 @@ async def run_agent(question: str, history=None) -> str:
 
 
 # --- 기존 graph.py에 붙이는 얇은 레이어 -----------------------------------
-# route()는 그대로 부른다 — 복합 판별은 별개 호출이라, route()가 뽑아준
-# app/site 같은 부가 정보는 에이전트 경로에선 안 쓴다(에이전트가 도구
-# 인자로 스스로 다시 채운다). 이렇게 나눈 이유: route()의 4-intent 스키마를
-# 안 건드리고 복합 판별을 완전히 별도 관심사로 뺄 수 있어서다.
+# classify 노드가 route()를 직접 부르고 plan 전체를 state에 남긴다.
+# fixed로 가면 이 plan을 graph.py에 그대로 넘겨서 route()가 두 번 안
+# 불리게 한다(위 모듈 docstring 참고) — agent로 가면 plan은 그냥 버려진다
+# (에이전트는 도구 인자로 스스로 app/site/기간을 다시 채운다).
 
 class AgentState(TypedDict, total=False):
     question: str
     k: int
     history: Optional[list]
-    compound: bool
+    plan: dict
     answer: str
 
 
 async def _classify_node(state: AgentState) -> dict:
-    return {"compound": await is_compound(state["question"])}
+    plan = await route(state["question"], history=state.get("history"))
+    return {"plan": plan}
 
 
 async def _agent_node(state: AgentState) -> dict:
@@ -236,7 +205,8 @@ async def _fixed_node(state: AgentState) -> dict:
     # 아니고, 두 진입점을 완전히 독립적으로 유지하려는 목적).
     from screenlog_langgraph.graph import ask_auto as _fixed_ask_auto
 
-    answer, plan, hits = await _fixed_ask_auto(state["question"], k=state["k"], history=state.get("history"))
+    answer, plan, hits = await _fixed_ask_auto(state["question"], k=state["k"], history=state.get("history"),
+                                                plan=state["plan"])
     writer = get_stream_writer()
     writer({"type": "plan", "plan": plan})
     writer({"type": "hits", "hits": hits or []})
@@ -246,7 +216,7 @@ async def _fixed_node(state: AgentState) -> dict:
 
 
 def _branch(state: AgentState) -> str:
-    return "agent" if state["compound"] else "fixed"
+    return "agent" if state["plan"]["compound"] else "fixed"
 
 
 def build_graph():
@@ -291,8 +261,8 @@ if __name__ == "__main__":
             "이번주 유튜브 몇 번 봤는지랑 어떤 영상 봤는지 같이 알려줘",  # 복합 -> agent
         ]
         for q in questions:
-            compound = await is_compound(q)
-            print(f"\n[복합={compound}] {q}")
+            plan = await route(q)
+            print(f"\n[복합={plan['compound']}] {q}")
             answer = await ask_auto(q)
             print(answer)
 

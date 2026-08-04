@@ -137,6 +137,14 @@ count_by_site: intent가 집계일 때만 의미가 있다. "크롬에서 뭘 �
     true. app을 안 물어보고 그냥 "몇 번 켰어"처럼 앱 단위로 세면 되는
     질문은 false.
 
+compound: 위 intent 하나(+periods 여러 개)만으로는 완전히 답할 수 없는
+    질문이면 true. "저번주 정리하고 이번주랑 비교"는 periods가 2개인
+    비교 하나로 이미 답이 되므로 false다 — 기간이 여러 개인 것 자체는
+    복합이 아니다. "이번주 유튜브 몇 번 봤는지랑 어떤 영상 봤는지 같이
+    알려줘"처럼 집계와 검색처럼 **서로 다른 intent가 둘 다 필요한 경우만**
+    true다. intent 하나(+periods)로 충분하면 false — 애매해도 우선
+    false로 둔다(비용이 더 드는 쪽은 틀렸을 때 손해가 크다).
+
 질문: {question}"""
 
 
@@ -181,8 +189,9 @@ def _route_schema():
             },
             "intent": {"type": "string", "enum": ["검색", "정리", "비교", "집계"]},
             "count_by_site": {"type": "boolean"},
+            "compound": {"type": "boolean"},
         },
-        "required": ["app", "site", "hour_range", "periods", "intent", "count_by_site"],
+        "required": ["app", "site", "hour_range", "periods", "intent", "count_by_site", "compound"],
         "additionalProperties": False,
     }
 
@@ -270,7 +279,7 @@ async def route(question, today=None, history=None):
         parsed = json.loads(response.choices[0].message.content)
     except json.JSONDecodeError:
         parsed = {"app": None, "site": None, "hour_range": None, "periods": [], "intent": "검색",
-                  "count_by_site": False}
+                  "count_by_site": False, "compound": False}
 
     hour_start, hour_end = _parse_hour_range(parsed.get("hour_range"))
 
@@ -296,6 +305,11 @@ async def route(question, today=None, history=None):
         # 집계일 때만 의미 있다 — 앱 단위가 아니라 방문 사이트(도메인)별로
         # 나눠서 세라는 신호. count_range()의 field="site" 인자로 그대로 간다.
         "count_by_site": bool(parsed.get("count_by_site")) and intent == "집계",
+        # screenlog_langgraph.agent가 이 필드로 고정 경로/에이전트 루프를
+        # 가른다. 예전엔 별도 LLM 호출(is_compound())로 뽑았는데, route()가
+        # 이미 질문을 통째로 분석하니 같은 호출에 필드 하나만 얹어서
+        # 질문당 LLM 호출을 1회 줄였다(트러블슈팅 문서 참고).
+        "compound": bool(parsed.get("compound")),
     }
 
 

@@ -43,7 +43,10 @@ class State(TypedDict, total=False):
 
 
 async def _route_node(state: State) -> dict:
-    plan = await route(state["question"], history=state.get("history"))
+    # agent.py가 복합 판별을 route()에 얹어서 이미 plan을 뽑아둔 채로 이
+    # 그래프를 부를 수 있다(ask_auto(..., plan=...)). 그 경우 route()를
+    # 또 부르면 LLM 호출이 중복돼서, 이미 있으면 그대로 재사용한다.
+    plan = state.get("plan") or await route(state["question"], history=state.get("history"))
     get_stream_writer()({"type": "plan", "plan": plan})
     return {"plan": plan}
 
@@ -180,14 +183,17 @@ def build_graph():
 _graph = build_graph()
 
 
-async def ask_auto(question, k=RETRIEVE_K, history=None):
-    """질문 -> (답변, plan, hits). screenlog.ask.ask_auto()와 같은 반환 형태."""
-    result = await _graph.ainvoke({"question": question, "k": k, "history": history})
+async def ask_auto(question, k=RETRIEVE_K, history=None, plan=None):
+    """질문 -> (답변, plan, hits). screenlog.ask.ask_auto()와 같은 반환 형태.
+
+    plan을 미리 넘기면(agent.py처럼 route()를 이미 호출해둔 경우) route
+    노드가 그걸 그대로 쓰고 새로 안 부른다."""
+    result = await _graph.ainvoke({"question": question, "k": k, "history": history, "plan": plan})
     return result["answer"], result["plan"], result.get("hits")
 
 
-async def stream_ask_auto(question, k=RETRIEVE_K, history=None):
+async def stream_ask_auto(question, k=RETRIEVE_K, history=None, plan=None):
     """screenlog.ask.stream_ask_auto()와 같은 이벤트(plan/hits/token/done)를 순서대로 낸다."""
-    async for chunk in _graph.astream({"question": question, "k": k, "history": history},
+    async for chunk in _graph.astream({"question": question, "k": k, "history": history, "plan": plan},
                                        stream_mode="custom"):
         yield chunk
