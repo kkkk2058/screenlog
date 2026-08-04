@@ -46,15 +46,20 @@ else:
 
 app = FastAPI(title="screenlog")
 
-# 팀 배포용 설치 페이지(/download)와 정적 리소스(/static, css/이미지뿐이라
-# 민감정보 없음)만 예외로 공개한다. 그 외 전부(화면 기록 질의/열람) 는
-# Basic Auth를 통과해야 한다 — 인증 없이 EC2에 떠 있던 사고 재발 방지.
+# 팀 배포용 설치 페이지(/download), 정적 리소스(/static, css/이미지뿐이라
+# 민감정보 없음), 마케팅 랜딩(정확히 "/") 만 예외로 공개한다. 그 외
+# 전부(화면 기록 질의/열람) 는 Basic Auth를 통과해야 한다 — 인증 없이
+# EC2에 떠 있던 사고 재발 방지.
+#
+# "/"는 prefix가 아니라 정확히 일치할 때만 공개해야 한다 — startswith에
+# "/"를 그대로 넣으면 모든 경로가 "/"로 시작하므로 인증 자체가 무력화된다.
 PUBLIC_PATH_PREFIXES = ("/download", "/static")
 
 
 class BasicAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path.startswith(PUBLIC_PATH_PREFIXES):
+        path = request.url.path
+        if path == "/" or path.startswith(PUBLIC_PATH_PREFIXES):
             return await call_next(request)
 
         auth = request.headers.get("authorization", "")

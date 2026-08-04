@@ -1,0 +1,77 @@
+/* 공유 디자인 토큰 — index / dashboard / explore 세 페이지가 같이 쓴다.
+ *
+ * 원래는 세 HTML이 :root 블록을 각자 복붙해서 갖고 있었다. 값이 완전히
+ * 같았는데도 한 파일만 고치면 나머지가 조용히 어긋나는 구조라, 한 곳으로
+ * 모았다.
+ *
+ * 색을 쓰는 원칙: UI(버튼, 보더, 배경)는 무채색으로 두고 색은 데이터에만
+ * 쓴다. 파란 버튼은 어느 사이트에나 있는 기본값처럼 읽혀서, 액션은
+ * --ink 계열(중립 검정)으로 채운다. --accent와 --app-N은 잔디·앱별
+ * 막대처럼 "값이 다르다"는 걸 색으로 구분해야 하는 자리에만 남긴다.
+ */
+
+:root{
+  color-scheme: light;
+  --plane:#eef1f4; --surface:#fff; --surface-2:#f7f9fb; --surface-3:#eef2f5;
+  --ink:#0d1013; --ink-2:#4a5158; --muted:#7d858d;
+  --baseline:#ccd3da; --border:rgba(13,16,19,.09);
+  --accent:#2a78d6; --warn:#c2740b; --warn-bg:#fdf3e3;
+  --app-1:#2a78d6; --app-2:#008300; --app-3:#e87ba4; --app-4:#eda100;
+  --app-5:#1baf7a; --app-6:#eb6834; --app-7:#4a3aa7; --app-8:#e34948;
+
+  /* 액션(버튼/CTA)용 — 색이 아니라 명도로 위계를 만든다 */
+  --action:#0d1013; --action-ink:#fff; --action-hover:#2c3238;
+
+  --mono: ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans: system-ui,-apple-system,"Apple SD Gothic Neo","Segoe UI",sans-serif;
+}
+
+@media (prefers-color-scheme: dark){
+  :root{
+    color-scheme: dark;
+    --plane:#0b0c0e; --surface:#17181b; --surface-2:#1d1f23; --surface-3:#26292e;
+    --ink:#f3f5f7; --ink-2:#b7bec6; --muted:#828a92;
+    --baseline:#383c42; --border:rgba(255,255,255,.10);
+    --accent:#3987e5; --warn:#e5a53a; --warn-bg:#2e2413;
+    --app-1:#3987e5; --app-2:#3a9a3a; --app-3:#d55181; --app-4:#c98500;
+    --app-5:#199e70; --app-6:#d95926; --app-7:#9085e9; --app-8:#e66767;
+
+    /* 다크에서는 밝은 쪽이 전면으로 나온다 — 명도 위계가 뒤집힌다 */
+    --action:#f3f5f7; --action-ink:#0d1013; --action-hover:#d3d8de;
+  }
+}
+
+/* 상단 내비게이션 / 워드마크 / 버튼 — 랜딩·다운로드·앱 화면이 전부 같이 쓴다.
+ * 원래 각 HTML에 복붙돼 있었는데, tokens.css의 색 값과 똑같은 이유로
+ * (한 곳만 고치면 나머지가 어긋남) 여기로 모았다.
+ *
+ * .wrap의 최대폭은 페이지마다 다르므로(랜딩 1000px, 다운로드 720px,
+ * 대시보드 1680px) 여기서 정하지 않는다 — 각 HTML이 자기 .wrap에서
+ * max-width만 정하고, .nav .wrap이 그 폭을 그대로 물려받는다. 다운로드
+ * 페이지처럼 nav만 더 넓게 쓰고 싶으면 `.nav .wrap{ max-width:... }`로
+ * 그 페이지에서만 덮어쓰면 된다. */
+.nav{ border-bottom:1px solid var(--border); background:var(--plane); }
+.nav .wrap{ display:flex; align-items:center; justify-content:space-between; height:60px; }
+
+.mark{ display:flex; align-items:center; gap:9px; font-size:15px; font-weight:600; letter-spacing:-.01em; text-decoration:none; color:var(--ink); }
+.mark .glyph{ display:flex; gap:2px; align-items:center; }
+.mark .glyph i{ width:4px; height:12px; border-radius:1.5px; background:var(--ink); display:block; }
+.mark .glyph i:nth-child(2){ background:var(--muted); height:9px; }
+.mark .glyph i:nth-child(3){ background:var(--baseline); height:6px; }
+
+.navlinks{ display:flex; align-items:center; gap:24px; font-size:13.5px; }
+.navlinks a{ color:var(--ink-2); text-decoration:none; }
+.navlinks a:hover{ color:var(--ink); }
+.navlinks a.on{ color:var(--ink); font-weight:500; }
+
+.btn{
+  display:inline-flex; align-items:center; gap:8px; text-decoration:none;
+  font-size:14px; font-weight:500; padding:11px 20px; border-radius:8px;
+  border:1px solid transparent; white-space:nowrap; color:var(--ink);
+  background:none; cursor:pointer; font-family:var(--sans);
+}
+.btn-primary{ background:var(--action); color:var(--action-ink); }
+.btn-primary:hover{ background:var(--action-hover); }
+.btn-secondary{ border-color:var(--baseline); }
+.btn-secondary:hover{ background:var(--surface); }
+.btn-sm{ padding:7px 14px; font-size:13px; border-radius:7px; }

@@ -3,88 +3,191 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>screenlog</title>
+<title>screenlog — 내 화면 기록에 물어보기</title>
+
+<meta name="description" content="화면 활동을 자동으로 기록하고 검색할 수 있게 만드는 개인용 도구. 원본은 기기에 남고, 민감한 정보는 저장 전에 가려집니다.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="screenlog — 내 화면 기록에 물어보기">
+<meta property="og:description" content="화면 활동을 자동으로 기록하고 검색할 수 있게 만드는 개인용 도구. 원본은 기기에 남고, 민감한 정보는 저장 전에 가려집니다.">
+<meta property="og:locale" content="ko_KR">
+<meta property="og:url" content="http://43.202.158.8:8000/">
+<meta property="og:image" content="http://43.202.158.8:8000/static/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="http://43.202.158.8:8000/static/og.png">
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230d1013'/><rect x='7' y='13' width='5' height='5' rx='1.5' fill='%23f3f5f7'/><rect x='14' y='13' width='5' height='5' rx='1.5' fill='%237d858d'/><rect x='21' y='13' width='4' height='5' rx='1.5' fill='%23474d55'/></svg>">
+<link rel="stylesheet" href="/static/tokens.css">
+
 <style>
-  :root{
-    color-scheme: light;
-    --plane:#eef1f4; --surface:#fff; --surface-2:#f7f9fb; --surface-3:#eef2f5;
-    --ink:#0d1013; --ink-2:#4a5158; --muted:#7d858d;
-    --baseline:#ccd3da; --border:rgba(13,16,19,.09);
-    --accent:#2a78d6; --warn:#c2740b; --warn-bg:#fdf3e3;
-    --mono: ui-monospace,"SF Mono",Menlo,Consolas,monospace;
-    --sans: system-ui,-apple-system,"Apple SD Gothic Neo","Segoe UI",sans-serif;
-  }
-  @media (prefers-color-scheme: dark){
-    :root{
-      color-scheme: dark;
-      --plane:#0b0c0e; --surface:#17181b; --surface-2:#1d1f23; --surface-3:#26292e;
-      --ink:#f3f5f7; --ink-2:#b7bec6; --muted:#828a92;
-      --baseline:#383c42; --border:rgba(255,255,255,.10);
-      --accent:#3987e5; --warn:#e5a53a; --warn-bg:#2e2413;
-    }
-  }
   *{ box-sizing:border-box; }
   body{
-    margin:0; min-height:100vh; background:var(--plane); color:var(--ink);
+    margin:0; background:var(--plane); color:var(--ink);
     font-family:var(--sans); line-height:1.5; -webkit-font-smoothing:antialiased;
-    display:flex; align-items:center; justify-content:center;
+    /* 기본값(break-all 성격)으로 두면 한글이 "가려집니 / 다."처럼 단어 중간에서
+       잘린다. keep-all이면 어절 단위로만 줄바꿈된다. */
+    word-break:keep-all;
   }
-  .wrap{ max-width:640px; margin:0 auto; padding:64px 24px; text-align:center; }
+  .wrap{ max-width:1000px; margin:0 auto; padding:0 24px; }
 
-  .eyebrow{
-    font-family:var(--mono); font-size:12px; letter-spacing:.06em; color:var(--muted);
-    text-transform:uppercase; margin:0 0 14px; display:flex; gap:10px; align-items:center;
-    justify-content:center;
+  /* 내비/워드마크/버튼 공통 스타일은 tokens.css에 있다. 여기는 이 페이지
+     에서만 다른 것(좁은 화면에서 링크 숨기기)만 남긴다. */
+  @media(max-width:640px){ .navlinks .hide-sm{ display:none; } }
+
+  /* 히어로 */
+  .hero{ text-align:center; padding:88px 0 40px; }
+  .hero h1{
+    font-size:clamp(30px,5.2vw,46px); line-height:1.2; letter-spacing:-.03em;
+    font-weight:600; margin:0 0 18px;
   }
-  .eyebrow .dot{ width:6px;height:6px;border-radius:50%;background:var(--accent); }
+  .hero p{ font-size:16.5px; line-height:1.65; color:var(--ink-2); max-width:44ch; margin:0 auto 32px; }
+  .hero .actions{ display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
 
-  h1{ font-size:clamp(28px,5vw,42px); line-height:1.15; margin:0 0 14px; letter-spacing:-.02em; font-weight:650; }
-  .lede{ font-size:16px; color:var(--ink-2); margin:0 auto 36px; max-width:46ch; }
-
-  .actions{ display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-bottom:44px; }
-  .btn{
-    display:inline-flex; align-items:center; gap:8px; padding:13px 22px;
-    border-radius:10px; font-size:14.5px; font-weight:620; text-decoration:none;
-    border:1px solid transparent; cursor:pointer;
+  /* 제품 화면 — 글로 설명하는 대신 무엇을 만든 건지 바로 보여주는 자리.
+     지금은 실제 캡처 대신 앱 레이아웃을 그대로 축약해서 그린다. */
+  .shot{ padding:8px 0 0; }
+  .frame{
+    border:1px solid var(--baseline); border-bottom:none;
+    border-radius:12px 12px 0 0; background:var(--surface); overflow:hidden;
   }
-  .btn-primary{ background:var(--accent); color:white; }
-  .btn-secondary{ background:var(--surface); color:var(--ink); border-color:var(--border); }
+  .frame .bar{ display:flex; gap:6px; padding:11px 14px; border-bottom:1px solid var(--border); }
+  .frame .bar i{ width:9px; height:9px; border-radius:50%; background:var(--baseline); display:block; }
+  .frame .body{ display:grid; grid-template-columns:130px minmax(0,1fr) 160px; gap:14px; padding:18px; height:280px; }
+  @media(max-width:720px){ .frame .body{ grid-template-columns:minmax(0,1fr) 150px; height:230px; } .frame .body .col-conv{ display:none; } }
+  @media(max-width:520px){ .frame .body{ grid-template-columns:minmax(0,1fr); } .frame .body .col-side{ display:none; } }
 
-  .features{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; text-align:left; }
-  @media(max-width:560px){ .features{ grid-template-columns:1fr; } }
-  .feature{ background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; }
-  .feature .k{ font-family:var(--mono); font-size:11px; letter-spacing:.05em; color:var(--accent); text-transform:uppercase; margin-bottom:6px; }
-  .feature .v{ font-size:13.5px; color:var(--ink-2); }
+  .ph{ background:var(--surface-2); border-radius:4px; height:10px; }
+  .col-conv{ display:flex; flex-direction:column; gap:8px; }
+  .col-conv .new{ height:28px; border-radius:7px; border:1px dashed var(--border); }
+  .col-chat{ display:flex; flex-direction:column; gap:9px; min-width:0; }
+  .col-chat .me{ align-self:flex-end; width:46%; height:26px; border-radius:9px; background:var(--surface-3); }
+  .col-chat .input{ margin-top:auto; height:36px; border-radius:9px; border:1px solid var(--border); }
+  .col-side{ display:flex; flex-direction:column; gap:12px; }
+  .grid{ display:grid; grid-template-columns:repeat(10,1fr); gap:3px; }
+  .grid span{ aspect-ratio:1; border-radius:2px; background:var(--surface-3); display:block; }
+
+  /* 기능 — 박스로 감싸지 않는다. 카드 보더를 없애면 "칸을 채운 것"이
+     아니라 "설명하는 것"으로 읽힌다. */
+  .features{ border-top:1px solid var(--border); margin-top:0; padding:56px 0; background:var(--surface); }
+  .features .grid3{ display:grid; grid-template-columns:repeat(3,1fr); gap:36px; }
+  @media(max-width:720px){ .features .grid3{ grid-template-columns:1fr; gap:28px; } }
+  .feat svg{ display:block; margin-bottom:12px; color:var(--ink); }
+  .feat h3{ font-size:15px; font-weight:600; margin:0 0 6px; letter-spacing:-.01em; }
+  .feat p{ font-size:14px; line-height:1.65; color:var(--ink-2); margin:0; }
+
+  footer{ border-top:1px solid var(--border); background:var(--surface); }
+  footer .wrap{
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+    flex-wrap:wrap; padding-top:22px; padding-bottom:22px;
+    font-size:12.5px; color:var(--muted);
+  }
+  footer a{ color:var(--muted); text-decoration:none; margin-left:18px; }
+  footer a:first-child{ margin-left:0; }
+  footer a:hover{ color:var(--ink-2); }
 </style>
 </head>
 <body>
+
+<header class="nav">
   <div class="wrap">
-    <p class="eyebrow"><span class="dot"></span>screenlog</p>
-    <h1>화면에 남긴 하루가<br>물어보면 답이 되도록</h1>
-    <p class="lede">
-      개인정보는 자동으로 가려서 저장하고, 화면 활동을 검색하고 물어볼 수
-      있게 만드는 개인용 기록 도구입니다.
-    </p>
-
-    <div class="actions">
-      <a class="btn btn-primary" href="/download/">앱 다운로드</a>
-      <a class="btn btn-secondary" href="/dashboard">대시보드 보기</a>
+    <div class="mark">
+      <span class="glyph"><i></i><i></i><i></i></span>
+      screenlog
     </div>
-
-    <div class="features">
-      <div class="feature">
-        <div class="k">기록</div>
-        <div class="v">화면 활동을 자동으로 캡처하고 이벤트 단위로 정리합니다.</div>
-      </div>
-      <div class="feature">
-        <div class="k">보호</div>
-        <div class="v">이메일·전화번호·API 키 같은 민감정보는 저장 전에 가려집니다.</div>
-      </div>
-      <div class="feature">
-        <div class="k">검색</div>
-        <div class="v">"어제 뭐 했어?"처럼 물어보면 근거와 함께 답합니다.</div>
-      </div>
-    </div>
+    <nav class="navlinks">
+      <a href="#features" class="hide-sm">기능</a>
+      <a href="#privacy" class="hide-sm">프라이버시</a>
+      <a class="btn btn-primary btn-sm" href="/download/">다운로드</a>
+    </nav>
   </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <h1>화면에 남긴 하루가<br>물어보면 답이 되도록</h1>
+      <p>기록은 이 컴퓨터에만 남습니다. 민감한 정보는 저장되기 전에 가려집니다.</p>
+      <div class="actions">
+        <a class="btn btn-primary" href="/download/">Mac용 다운로드</a>
+        <a class="btn btn-secondary" href="/dashboard">둘러보기</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="shot">
+    <div class="wrap">
+      <div class="frame">
+        <div class="bar"><i></i><i></i><i></i></div>
+        <div class="body">
+          <div class="col-conv">
+            <div class="new"></div>
+            <div class="ph" style="width:88%"></div>
+            <div class="ph" style="width:70%"></div>
+            <div class="ph" style="width:80%"></div>
+          </div>
+          <div class="col-chat">
+            <div class="me"></div>
+            <div class="ph" style="width:96%"></div>
+            <div class="ph" style="width:88%"></div>
+            <div class="ph" style="width:93%"></div>
+            <div class="ph" style="width:74%"></div>
+            <div class="input"></div>
+          </div>
+          <div class="col-side">
+            <div class="grid" id="grid"></div>
+            <div class="ph" style="width:92%"></div>
+            <div class="ph" style="width:76%"></div>
+            <div class="ph" style="width:58%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="features" id="features">
+    <div class="wrap grid3">
+      <div class="feat" id="privacy">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>
+        <h3>기록은 기기에 남습니다</h3>
+        <p>화면 원본은 이 컴퓨터를 떠나지 않습니다. 무엇을 내보낼지는 직접 정합니다.</p>
+      </div>
+      <div class="feat">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"></path><path d="M10.6 5.1A9.8 9.8 0 0 1 12 5c5 0 9 4.5 9 7a11 11 0 0 1-2.3 3.7"></path><path d="M6.6 6.6C4 8.2 3 10.7 3 12c0 2.5 4 7 9 7a9.7 9.7 0 0 0 4.4-1"></path><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"></path></svg>
+        <h3>민감정보는 가려집니다</h3>
+        <p>이메일, 전화번호, API 키 같은 정보는 저장되기 전에 마스킹됩니다.</p>
+      </div>
+      <div class="feat">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"></path></svg>
+        <h3>물어보면 답합니다</h3>
+        <p>"어제 뭐 했지?"처럼 물어보면, 무엇을 근거로 삼았는지와 함께 답합니다.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 screenlog</span>
+    <span>
+      <a href="/dashboard">대시보드</a>
+      <a href="/explore">탐색</a>
+      <a href="/download/">다운로드</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+// 잔디는 값이 다르다는 걸 보여주는 자리라 색(--accent)을 쓴다 — 나머지 UI가
+// 전부 무채색이라 여기만 색이 들어가도 시선이 자연히 데이터로 간다.
+const LEVELS = [0,0,.18,0,.45,0,.85,.3,0,.6, .25,0,.7,0,.15,.5,0,.9,0,.35,
+                0,.55,0,.2,.75,0,.4,0,.65,0, .3,0,.5,.15,0,.8,0,.25,.45,0];
+const grid = document.getElementById("grid");
+LEVELS.forEach(v=>{
+  const cell = document.createElement("span");
+  if(v > 0) cell.style.background = `color-mix(in srgb, var(--accent) ${Math.round(v*100)}%, transparent)`;
+  grid.append(cell);
+});
+</script>
 </body>
 </html>
