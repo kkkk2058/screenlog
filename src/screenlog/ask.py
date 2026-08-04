@@ -23,7 +23,7 @@ from screenlog.config import (
     RETRIEVE_K,
 )
 from screenlog.index import embed, get_collection
-from screenlog.router import _format_history, route
+from screenlog.router import _format_history, route, site_matches
 from screenlog.source import LOCAL_TZ, weekday_ko
 from screenlog.summarize import (
     compare_periods,
@@ -99,10 +99,12 @@ def search(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, sit
     벡터 유사도는 "이 문서의 앱이 뭔가" 같은 축을 못 보기 때문에,
     앱/시각/날짜는 벡터가 아니라 metadata 필터로 걸러야 한다.
 
-    site("YouTube" 등)는 window 제목 안의 부분 문자열이라 chroma where로
-    못 거른다(summarize.browse()와 같은 이유). chroma가 골라준 top-k를
-    다시 site로 걸러내면 k개보다 적게 남을 수 있어서, site가 있을 때는
-    5배 더 가져온 뒤 걸러서 최대한 k개를 채운다.
+    site("YouTube" 등)는 chroma where로 못 거른다 — site_matches()가 이벤트별로
+    도메인(있으면) 또는 window 부분 문자열(없으면)로 판단하는데, 어느 쪽이든
+    chroma의 where 문법(정확한 값 매칭)으론 표현이 안 된다(summarize.browse()와
+    같은 이유). chroma가 골라준 top-k를 다시 site로 걸러내면 k개보다 적게
+    남을 수 있어서, site가 있을 때는 5배 더 가져온 뒤 걸러서 최대한 k개를
+    채운다.
 
     app이 AI_APPS(Claude/Code)를 명시적으로 지정한 게 아니면 그 두 앱의
     이벤트는 후보에서 뺀다 — "재귀 오염"(docs/troubleshooting-star.md #8):
@@ -128,7 +130,7 @@ def search(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, sit
         hits.append(hit)
 
     if site:
-        hits = [h for h in hits if site.lower() in h.get("window", "").lower()]
+        hits = [h for h in hits if site_matches(site, h)]
     if exclude_ai_apps:
         hits = [h for h in hits if h["app"] not in AI_APPS]
 

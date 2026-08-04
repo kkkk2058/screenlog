@@ -53,6 +53,35 @@ SITE_ALIASES = {
 
 _SITE_HINT = "\n".join(f"    {site}: {'/'.join(aliases)}" for site, aliases in SITE_ALIASES.items())
 
+# SITE_ALIASES는 사용자 말투("유튜브")를 친숙한 이름("YouTube")으로 좁히는
+# 용도고, 이건 그 친숙한 이름을 실제 metadata 도메인("youtube.com")으로
+# 다시 좁히는 용도다 — 둘이 하는 일이 다르다(자연어 이해 vs 정확한 필터링).
+# 실측 도메인 기준으로 채웠다(예: Notion은 notion.so가 아니라 app.notion.com로
+# 찍힘). 서비스가 도메인을 바꾸면 여기만 손보면 된다.
+SITE_DOMAINS = {
+    "YouTube": ("youtube.com",),
+    "Notion": ("app.notion.com", "notion.so", "notion.site"),
+    "Gmail": ("mail.google.com",),
+    "GitHub": ("github.com",),
+    "Google Docs": ("docs.google.com",),
+    "Google Calendar": ("calendar.google.com",),
+}
+
+
+def site_matches(site, meta):
+    """plan['site'](예: "YouTube")가 이벤트 하나(meta 또는 event dict)와
+    맞는지 판단한다.
+
+    meta에 site(도메인, clean.py의 site_from_url 참고)가 있으면 정확히
+    비교한다 — 창 제목보다 신뢰도가 높다(실측: 창 제목이 실제보다 늦게
+    바뀐 채로 남아있던 사례). site가 없는 이벤트(8/1 이전 미백필 데이터)는
+    도메인을 모르니, 그 기간 검색이 통째로 안 되는 것보단 낫다고 보고
+    예전 방식(창 제목 부분 문자열)으로 폴백한다."""
+    event_site = meta.get("site")
+    if event_site:
+        return event_site in SITE_DOMAINS.get(site, ())
+    return site.lower() in meta.get("window", "").lower()
+
 
 
 

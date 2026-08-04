@@ -22,7 +22,7 @@ from screenlog.config import (
     SUMMARY_DETAIL_KEYWORDS,
 )
 from screenlog.index import get_collection, indexed_dates
-from screenlog.router import _format_history
+from screenlog.router import _format_history, site_matches
 from screenlog.source import weekday_ko
 from openai import AsyncOpenAI
 
@@ -132,7 +132,7 @@ def browse(date, app=None, hour_start=None, hour_end=None, site=None):
         events.append(event)
 
     if site:
-        events = [e for e in events if site.lower() in e.get("window", "").lower()]
+        events = [e for e in events if site_matches(site, e)]
     if app not in AI_APPS:
         events = [e for e in events if e["app"] not in AI_APPS]
 
@@ -291,7 +291,7 @@ def count_range(dates, app=None, site=None, field="app"):
     result = col.get(where=where, include=["metadatas"])
     metas = result["metadatas"]
     if site:
-        metas = [m for m in metas if site.lower() in m.get("window", "").lower()]
+        metas = [m for m in metas if site_matches(site, m)]
     # field="site"로 셀 때 빈 문자열("" = url 없음, 브라우저가 아니거나 url이
     # 캡처 당시 비어 있던 경우)까지 그대로 세면 "가장 많이 등장한 건 (공백)
     # 97회"처럼 의미 없는 1등이 나온다. app은 항상 값이 있어서 이 필터가
