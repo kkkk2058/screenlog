@@ -102,6 +102,12 @@ intent: 답을 만드는 방식을 고른다. periods가 비어 있으면 무조
         "제일"이 있어도 세는 대상이 "며칠"이 아니라 "앱/행동의 횟수"일 때만
         집계다. "언제가 제일 바빴어"는 날짜를 비교하는 것이므로 비교다.
 
+count_by_site: intent가 집계일 때만 의미가 있다. "크롬에서 뭘 많이 봤어",
+    "브라우저에서 어떤 사이트 많이 갔어"처럼 앱 하나의 총 횟수가 아니라
+    **그 안에서 방문한 사이트(도메인)별로 나눠서 세야** 답이 되는 질문이면
+    true. app을 안 물어보고 그냥 "몇 번 켰어"처럼 앱 단위로 세면 되는
+    질문은 false.
+
 질문: {question}"""
 
 
@@ -145,8 +151,9 @@ def _route_schema():
                 },
             },
             "intent": {"type": "string", "enum": ["검색", "정리", "비교", "집계"]},
+            "count_by_site": {"type": "boolean"},
         },
-        "required": ["app", "site", "hour_range", "periods", "intent"],
+        "required": ["app", "site", "hour_range", "periods", "intent", "count_by_site"],
         "additionalProperties": False,
     }
 
@@ -233,7 +240,8 @@ async def route(question, today=None, history=None):
     try:
         parsed = json.loads(response.choices[0].message.content)
     except json.JSONDecodeError:
-        parsed = {"app": None, "site": None, "hour_range": None, "periods": [], "intent": "검색"}
+        parsed = {"app": None, "site": None, "hour_range": None, "periods": [], "intent": "검색",
+                  "count_by_site": False}
 
     hour_start, hour_end = _parse_hour_range(parsed.get("hour_range"))
 
@@ -256,6 +264,9 @@ async def route(question, today=None, history=None):
         "hour_end": hour_end,
         "periods": periods,
         "intent": intent,
+        # 집계일 때만 의미 있다 — 앱 단위가 아니라 방문 사이트(도메인)별로
+        # 나눠서 세라는 신호. count_range()의 field="site" 인자로 그대로 간다.
+        "count_by_site": bool(parsed.get("count_by_site")) and intent == "집계",
     }
 
 

@@ -34,8 +34,14 @@ DAY_SUMMARY_PROMPT = """아래는 사용자의 {date}({weekday}) {scope} 화면 
 질문: {question}
 
 위 기록을 질문의 요청 방식에 맞게 요약하라. 규칙:
-- 각 항목은 "* HH시MM분 - 내용" 형식으로, 한 줄에 하나씩 쓴다(번호 매기기나 줄글 금지).
-- 시각과 앱 이름을 항목 안에 함께 밝힌다.
+- 질문이 "정리해줘"/"뭐 했어" 같은 목록·타임라인 요청이면, 각 항목을
+  "* HH시MM분 - 내용" 형식으로 한 줄에 하나씩 쓴다(번호 매기기나 줄글 금지).
+- 질문이 "잘했나"/"산만했나"/"어땠어"/"괜찮았어?"처럼 목록이 아니라 평가나
+  의견을 묻는 것이면, 불릿 형식에 얽매이지 말고 기록에 나타난 근거(시각,
+  앱, 무엇을 했는지)를 짚어가며 판단을 담은 줄글로 답한다. 기록에 없는
+  근거로 판단하지 않는다.
+- 시각과 앱 이름을 항목 안에 함께 밝힌다(줄글로 답할 때도 근거로 언급한
+  시각/앱은 그대로 밝힌다).
 - 하루 전체를 본 것처럼("하루를 시작했습니다", "마지막으로" 등) 서술하지 말고,
   주어진 기록이 커버하는 시간 범위 안에서만 서술한다.
 - 항목 개수와 문장 난이도는 질문에 맞춘다. 질문에 특별한 요청이 없으면 5개
@@ -286,7 +292,11 @@ def count_range(dates, app=None, site=None, field="app"):
     metas = result["metadatas"]
     if site:
         metas = [m for m in metas if site.lower() in m.get("window", "").lower()]
-    return Counter(meta[field] for meta in metas)
+    # field="site"로 셀 때 빈 문자열("" = url 없음, 브라우저가 아니거나 url이
+    # 캡처 당시 비어 있던 경우)까지 그대로 세면 "가장 많이 등장한 건 (공백)
+    # 97회"처럼 의미 없는 1등이 나온다. app은 항상 값이 있어서 이 필터가
+    # 영향을 안 준다.
+    return Counter(meta[field] for meta in metas if meta.get(field))
 
 
 def format_count(counter, top_n=5):

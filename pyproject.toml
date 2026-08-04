@@ -20,9 +20,14 @@ dependencies = [
 # langgraph: route()/검색/요약은 원본을 그대로 가져다 쓰고, 오케스트레이션(그래프
 # 분기·스트리밍)만 새로 짠 버전 — LLM 호출 라이브러리를 바꾼 게 아니라 그래프
 # 엔진만 얹은 거라 langgraph 하나만 있으면 된다.
+# langgraph-agent: graph.py의 고정 분기에 tool-calling(ReAct) 폴백 하나만
+# 얹은 agent.py용. create_react_agent가 langchain의 tool-calling 모델
+# 인터페이스를 요구해서 langchain-openai가 추가로 필요하다 — 그래서
+# langgraph 기본 extra에 안 넣고 따로 뺐다(fixed 경로만 쓸 땐 이 무게가 불필요).
 [project.optional-dependencies]
 langchain = ["langchain-core>=0.3", "langchain-openai>=0.3"]
 langgraph = ["langgraph>=0.2"]
+langgraph-agent = ["langgraph>=0.2", "langchain-core>=0.3", "langchain-openai>=0.3"]
 
 [dependency-groups]
 dev = [

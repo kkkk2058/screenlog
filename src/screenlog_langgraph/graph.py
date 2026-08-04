@@ -102,9 +102,10 @@ async def _multi_period_node(state: State) -> dict:
     app, hour_start, hour_end, site = plan["app"], plan["hour_start"], plan["hour_end"], plan["site"]
 
     if plan["intent"] == "집계":
+        field = "site" if plan["count_by_site"] else "app"
         blocks = []
         for period in periods:
-            counter = count_range(period["dates"], app=app, site=site)
+            counter = count_range(period["dates"], app=app, site=site, field=field)
             blocks.append(f"[{period['label']}]\n{format_count(counter)}")
         answer = "\n\n".join(blocks)
     elif plan["intent"] == "정리":
@@ -130,7 +131,8 @@ async def _single_period_node(state: State) -> dict:
     app, hour_start, hour_end, site = plan["app"], plan["hour_start"], plan["hour_end"], plan["site"]
 
     if plan["intent"] == "집계":
-        counter = count_range(dates, app=app, site=site)
+        counter = count_range(dates, app=app, site=site,
+                               field="site" if plan["count_by_site"] else "app")
         answer = format_count(counter)
     elif plan["intent"] == "비교":
         answer = await compare_range(question, dates, app=app, hour_start=hour_start, hour_end=hour_end,

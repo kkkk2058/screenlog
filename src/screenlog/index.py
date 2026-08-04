@@ -5,13 +5,16 @@
 """
 
 import hashlib
+import sqlite3
+import threading
 import time
+from datetime import datetime
 
 import chromadb
 import torch
 from sentence_transformers import SentenceTransformer
 
-from screenlog.clean import to_events
+from screenlog.clean import site_from_url, to_events
 from screenlog.config import (
     CHROMA_DIR,
     COLLECTION,
@@ -19,7 +22,7 @@ from screenlog.config import (
     EMBEDDING_MODEL,
     INDEX_CHECKPOINT_SIZE,
 )
-from screenlog.source import available_dates, load_frames
+from screenlog.source import TZ_MODIFIER, available_dates, load_frames, to_local
 
 _model = None
 
@@ -50,20 +53,30 @@ def embed(texts):
 
 
 _collection = None
+_collection_lock = threading.Lock()
 
 
 def get_collection():
     """chroma 클라이언트도 모델처럼 한 번만 연다. PersistentClient를 매번 새로
-    열면 db.sqlite가 커질수록(현재 900MB대) 연결에만 수 초가 걸린다."""
+    열면 db.sqlite가 커질수록(현재 900MB대) 연결에만 수 초가 걸린다.
+
+    락을 거는 이유: 호출부가 늘면서(에이전트가 도구 여러 개를 동시에 부르는
+    경로 등) 여러 스레드가 _collection이 아직 None인 순간에 동시에 들어올 수
+    있다. 그러면 PersistentClient()가 같은 프로세스에서 두 번 겹쳐 생성돼
+    chromadb의 프로세스 전역 SharedSystemClient가 깨진다(실측: "Could not
+    connect to tenant default_tenant" 에러). 락으로 최초 생성 구간만 직렬화한다."""
     global _collection
-    if _collection is None:
-        client = chromadb.PersistentClient(path=CHROMA_DIR)
-        # 임베딩을 우리가 직접 만들어 넣으므로 chroma 기본 임베딩 함수는 끈다.
-        _collection = client.get_or_create_collection(
-            COLLECTION,
-            metadata={"hnsw:space": "cosine"},
-            embedding_function=None,
-        )
+    if _collection is not None:
+        return _collection
+    with _collection_lock:
+        if _collection is None:
+            client = chromadb.PersistentClient(path=CHROMA_DIR)
+            # 임베딩을 우리가 직접 만들어 넣으므로 chroma 기본 임베딩 함수는 끈다.
+            _collection = client.get_or_create_collection(
+                COLLECTION,
+                metadata={"hnsw:space": "cosine"},
+                embedding_function=None,
+            )
     return _collection
 
 
@@ -148,6 +161,93 @@ def index_all():
             print(f"[{date}] 건너뜀 - 이미 있음")
             continue
         index_date(date)
+
+
+def backfill_site(dates=None):
+    """이미 색인된 이벤트에 site 필드를 채운다.
+
+    site는 event_id()의 해시 키(app|window|start|text)에 안 들어가므로,
+    site 계산 방식이 나중에 바뀌어도(clean.py의 site_from_url 참고) 기존
+    id가 그대로 유지된다 — 그래서 index_date()를 다시 돌려도 이미 있는 id는
+    건너뛰어서 새 site가 절대 안 채워진다. 원본 프레임을 다시 읽어 같은
+    id로 이벤트를 재구성한 뒤, 임베딩은 그대로 두고 metadata만 patch한다."""
+    col = get_collection()
+    dates = sorted(dates) if dates else sorted(indexed_dates())
+    for date in dates:
+        events = to_events(load_frames(date))
+        unique = {event_id(e): e for e in events}
+        ids = list(unique.keys())
+        if not ids:
+            continue
+
+        existing = col.get(ids=ids, include=["metadatas"])
+        update_ids, update_metas = [], []
+        for eid, meta in zip(existing["ids"], existing["metadatas"]):
+            if meta.get("site") == unique[eid]["site"]:
+                continue  # 이미 같은 값 — 재실행해도 매번 새로 안 쓴다
+            update_ids.append(eid)
+            update_metas.append({**meta, "site": unique[eid]["site"]})
+
+        if update_ids:
+            col.update(ids=update_ids, metadatas=update_metas)
+        print(f"[{date}] site 채움: {len(update_ids)}/{len(ids)}개")
+
+
+def backfill_site_from_source(dates, source_db):
+    """SCREENPIPE_DB(리덕션본)가 보존 기간이 지나 회전되면서 원본 프레임을
+    잃어버린 날짜용 — 다른 DB(예: 리덕션 전 원본)에서 프레임을 읽어와
+    site를 채운다.
+
+    event_id()(app|window|start|text 해시)로 매칭하지 않는다. site는
+    url에서만 뽑히고 text(리덕션 대상이라 두 DB 사이에 다를 수 있다)는
+    안 쓰는데, 해시엔 text가 들어가서 안 맞을 수 있다. 대신 이미 색인된
+    이벤트의 metadata(app/window/start~end 시간대)로 그 구간에 속하는
+    원본 프레임을 찾아 url만 가져온다 — text 자체를 옮기지 않으므로
+    리덕션 여부는 상관없다."""
+    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    col = get_collection()
+
+    for date in dates:
+        existing = col.get(where={"date": date}, include=["metadatas"])
+        if not existing["ids"]:
+            print(f"[{date}] 색인된 이벤트 없음")
+            continue
+
+        rows = conn.execute(
+            f"SELECT timestamp, app_name, window_name, browser_url FROM frames "
+            f"WHERE date(timestamp, '{TZ_MODIFIER}') = ? ORDER BY timestamp", (date,),
+        ).fetchall()
+        frames = [
+            {"t": to_local(r["timestamp"]), "app": r["app_name"] or "",
+             "window": r["window_name"] or "", "url": r["browser_url"]}
+            for r in rows
+        ]
+
+        update_ids, update_metas = [], []
+        for eid, meta in zip(existing["ids"], existing["metadatas"]):
+            if meta.get("site"):
+                continue
+            # meta의 start/end는 초 단위까지만 저장돼 있다(isoformat(timespec="seconds")).
+            # 원본 프레임 타임스탬프는 마이크로초가 있어서, 프레임 쪽도 초 단위로
+            # 깎지 않으면 (특히 프레임 1개짜리 이벤트에서 start==end일 때) end보다
+            # 미세하게 늦은 것으로 잘못 판정돼 거의 다 매칭에서 빠진다.
+            start, end = datetime.fromisoformat(meta["start"]), datetime.fromisoformat(meta["end"])
+            match = next(
+                (f for f in frames if f["app"] == meta["app"] and f["window"] == meta["window"]
+                 and start <= f["t"].replace(microsecond=0) <= end),
+                None,
+            )
+            site = site_from_url(match["url"]) if match else ""
+            if site:
+                update_ids.append(eid)
+                update_metas.append({**meta, "site": site})
+
+        if update_ids:
+            col.update(ids=update_ids, metadatas=update_metas)
+        print(f"[{date}] site 채움(원본 DB 매칭): {len(update_ids)}/{len(existing['ids'])}개")
+
+    conn.close()
 
 
 if __name__ == "__main__":

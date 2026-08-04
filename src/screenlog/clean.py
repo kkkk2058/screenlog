@@ -9,6 +9,8 @@
   나누기  같은 창이어도 화면이 바뀌거나 너무 길면 끊는다
 """
 
+from urllib.parse import urlparse
+
 from screenlog.config import JACCARD_MIN, MAX_EVENT_CHARS, MIN_EVENT_CHARS
 
 
@@ -48,6 +50,23 @@ def group_frames(frames):
     return groups
 
 
+def site_from_url(url):
+    """방문한 URL -> 도메인("youtube.com" 등). "www."는 뗀다.
+
+    site를 window 제목에서 정규식/화이트리스트로 뽑던 걸 관뒀다 — 제목은
+    Chrome이 붙이는 잡음(메모리 사용량, 오디오 표시)이 섞여 있고 갱신도
+    늦다(실측: 유튜브로 넘어갔는데 제목은 아직 이전 탭 제목). screenpipe가
+    이미 실제 URL을 주므로(browser_url 컬럼) 그걸 그대로 쓰면 화이트리스트
+    유지보수 없이 어떤 사이트든 정확히 잡힌다.
+
+    url이 없으면(브라우저가 아닌 앱이거나 캡처가 비어 있던 경우) 빈
+    문자열 — chroma metadata는 None을 못 받는다."""
+    if not url:
+        return ""
+    netloc = urlparse(url).netloc
+    return netloc[4:] if netloc.startswith("www.") else netloc
+
+
 def make_event(lines, frames):
     """모아둔 줄과 그 줄이 나온 프레임들로 이벤트 하나를 만든다."""
     start = frames[0]["t"]
@@ -56,6 +75,7 @@ def make_event(lines, frames):
         "text": "\n".join(lines),
         "app": frames[0]["app"],
         "window": frames[0]["window"],
+        "site": site_from_url(frames[0].get("url")),
         "frame_count": len(frames),
         # 사람이 읽는 용도
         "start": start.isoformat(timespec="seconds"),

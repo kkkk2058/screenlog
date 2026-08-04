@@ -235,7 +235,8 @@ async def stream_ask_auto(question, k=RETRIEVE_K, history=None):
         if plan["intent"] == "집계":
             blocks = []
             for period in periods:
-                counter = count_range(period["dates"], app=plan["app"], site=plan["site"])
+                counter = count_range(period["dates"], app=plan["app"], site=plan["site"],
+                                       field="site" if plan["count_by_site"] else "app")
                 blocks.append(f"[{period['label']}]\n{format_count(counter)}")
             answer = "\n\n".join(blocks)
         elif plan["intent"] == "정리":
@@ -256,7 +257,8 @@ async def stream_ask_auto(question, k=RETRIEVE_K, history=None):
     if len(periods) == 1:
         dates = periods[0]["dates"]
         if plan["intent"] == "집계":
-            counter = count_range(dates, app=plan["app"], site=plan["site"])
+            counter = count_range(dates, app=plan["app"], site=plan["site"],
+                                   field="site" if plan["count_by_site"] else "app")
             answer = format_count(counter)
         elif plan["intent"] == "비교":
             answer = await compare_range(question, dates, app=plan["app"], hour_start=hour_start,
@@ -321,13 +323,14 @@ async def ask_auto(question, k=RETRIEVE_K):
         if plan["intent"] == "집계":
             blocks = []
             for period in periods:
-                counter = count_range(period["dates"], app=plan["app"], site=plan["site"])
+                counter = count_range(period["dates"], app=plan["app"], site=plan["site"],
+                                       field="site" if plan["count_by_site"] else "app")
                 blocks.append(f"[{period['label']}]\n{format_count(counter)}")
             answer = "\n\n".join(blocks)
         elif plan["intent"] == "정리":
             blocks = await asyncio.gather(*[
                 summarize_period(period, app=plan["app"], hour_start=hour_start,
-                                  hour_end=hour_end, site=plan["site"])
+                                  hour_end=hour_end, site=plan["site"], question=question)
                 for period in periods
             ])
             answer = "\n\n".join(blocks)
@@ -339,14 +342,15 @@ async def ask_auto(question, k=RETRIEVE_K):
     if len(periods) == 1:
         dates = periods[0]["dates"]
         if plan["intent"] == "집계":
-            counter = count_range(dates, app=plan["app"], site=plan["site"])
+            counter = count_range(dates, app=plan["app"], site=plan["site"],
+                                   field="site" if plan["count_by_site"] else "app")
             answer = format_count(counter)
         elif plan["intent"] == "비교":
             answer = await compare_range(question, dates, app=plan["app"], hour_start=hour_start,
                                           hour_end=hour_end, site=plan["site"])
         else:
             answer = await summarize_range(dates, app=plan["app"], hour_start=hour_start,
-                                            hour_end=hour_end, site=plan["site"])
+                                            hour_end=hour_end, site=plan["site"], question=question)
         return answer, plan, None
 
     answer, hits = await ask(question, k=k, app=plan["app"], hour_start=hour_start,
@@ -382,6 +386,6 @@ if __name__ == "__main__":
                     print(f"  [{hit['distance']:.3f}] {hit['start']}  "
                           f"{hit['app']} / {hit['window'][:40]}")
             else:
-                print("\n(근거 없음)")
+                print("\n")
 
     asyncio.run(main())
