@@ -119,8 +119,7 @@ else:
 # ask_auto()/stream_ask_auto()를 screenlog_langgraph 버전으로 바꿔서 쓸지.
 # 기본은 원본(screenlog.ask)이고, 환경변수로만 켠다 — api.py가 이 값 하나로
 # 분기하므로 롤백은 환경변수를 지우기만 하면 된다(코드 배포 불필요).
-#USE_LANGGRAPH = os.environ.get("USE_LANGGRAPH", "").lower() in ("1", "true", "yes")
-USE_LANGGRAPH=True
+USE_LANGGRAPH = os.environ.get("USE_LANGGRAPH", "").lower() in ("1", "true", "yes")
 # --- 시간 -------------------------------------------------------------
 # screenpipe는 UTC로 저장하는데 질문은 한국 시간으로 들어온다.
 # 읽어 들일 때 한 번만 변환하고, 그 뒤로는 전부 로컬로 생각한다.
