@@ -119,9 +119,23 @@ else:
 # ask_auto()/stream_ask_auto()를 screenlog_langgraph 버전으로 바꿔서 쓸지.
 # 기본은 원본(screenlog.ask)이고, 환경변수로만 켠다 — api.py가 이 값 하나로
 # 분기하므로 롤백은 환경변수를 지우기만 하면 된다(코드 배포 불필요).
-USE_LANGGRAPH = os.environ.get("USE_LANGGRAPH", "").lower() in ("1", "true", "yes")
-# USE_LANGGRAPH=True
+#USE_LANGGRAPH = os.environ.get("USE_LANGGRAPH", "").lower() in ("1", "true", "yes")
+USE_LANGGRAPH=True
 # --- 시간 -------------------------------------------------------------
 # screenpipe는 UTC로 저장하는데 질문은 한국 시간으로 들어온다.
 # 읽어 들일 때 한 번만 변환하고, 그 뒤로는 전부 로컬로 생각한다.
 TZ_OFFSET_HOURS = 9
+
+# --- 인증 -------------------------------------------------------------
+# 화면 기록(메신저 대화·로그인 화면 포함)을 다루는 API라 인터넷에 그대로
+# 열어두면 안 된다(api.py 상단 주석 참고). EC2에 이미 인증 없이 배포된 적이
+# 있었던 사고를 계기로, 값을 안 채우면 아예 기동하지 않게 강제한다 —
+# "일단 띄우고 나중에 잠그자"가 반복될 여지를 없앤다. /download, /static은
+# 팀 배포용 설치 페이지라 예외로 공개한다(api.py PUBLIC_PATH_PREFIXES).
+SCREENLOG_USER = os.environ.get("SCREENLOG_USER")
+SCREENLOG_PASSWORD = os.environ.get("SCREENLOG_PASSWORD")
+if not (SCREENLOG_USER and SCREENLOG_PASSWORD):
+    raise RuntimeError(
+        "SCREENLOG_USER/SCREENLOG_PASSWORD가 .env에 없다. "
+        "화면 기록을 다루는 API라 인증 없이는 기동하지 않는다."
+    )

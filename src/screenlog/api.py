@@ -13,17 +13,20 @@
 """
 
 import asyncio
+import base64
 import re
+import secrets
 import time
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from screenlog import chat_history, summary_cache
-from screenlog.config import AI_APPS, USE_LANGGRAPH
+from screenlog.config import AI_APPS, SCREENLOG_PASSWORD, SCREENLOG_USER, USE_LANGGRAPH
 from screenlog.source import weekday_ko
 from screenlog.stats import build_stats, build_timeline
 from screenlog.summarize import summarize_day
@@ -43,7 +46,39 @@ else:
 
 app = FastAPI(title="screenlog")
 
+# 팀 배포용 설치 페이지(/download)와 정적 리소스(/static, css/이미지뿐이라
+# 민감정보 없음)만 예외로 공개한다. 그 외 전부(화면 기록 질의/열람) 는
+# Basic Auth를 통과해야 한다 — 인증 없이 EC2에 떠 있던 사고 재발 방지.
+PUBLIC_PATH_PREFIXES = ("/download", "/static")
+
+
+class BasicAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path.startswith(PUBLIC_PATH_PREFIXES):
+            return await call_next(request)
+
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Basic "):
+            try:
+                user, _, password = base64.b64decode(auth[6:]).decode().partition(":")
+            except (ValueError, UnicodeDecodeError):
+                user, password = "", ""
+            # secrets.compare_digest로 타이밍 공격을 막는다 — user/password
+            # 비교를 ==로 하면 앞글자가 맞을수록 응답이 미세하게 느려져서
+            # 문자 단위로 비밀번호를 추측당할 수 있다.
+            if secrets.compare_digest(user, SCREENLOG_USER) and secrets.compare_digest(password, SCREENLOG_PASSWORD):
+                return await call_next(request)
+
+        return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="screenlog"'})
+
+
+app.add_middleware(BasicAuthMiddleware)
+
 STATIC_DIR = Path(__file__).parent / "static"
+
+# 공유 디자인 토큰(tokens.css)을 세 페이지가 같이 불러 쓰려면 정적 파일 경로가
+# 필요하다. 페이지 자체는 각각 라우트로 서빙하므로 여기선 css/이미지만 나간다.
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # 팀원용 녹화 프로그램(.dmg) 배포 페이지. 여기서 받아야 실제 브라우저
 # 다운로드로 격리(quarantine) 속성이 붙어서, Gatekeeper 경고까지 포함한
