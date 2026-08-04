@@ -163,13 +163,13 @@ def index_all():
         index_date(date)
 
 
-def backfill_site(dates=None):
-    """이미 색인된 이벤트에 site 필드를 채운다.
+def backfill_site(dates=None, fields=("site", "url")):
+    """이미 색인된 이벤트에 site/url 필드를 채운다.
 
-    site는 event_id()의 해시 키(app|window|start|text)에 안 들어가므로,
-    site 계산 방식이 나중에 바뀌어도(clean.py의 site_from_url 참고) 기존
-    id가 그대로 유지된다 — 그래서 index_date()를 다시 돌려도 이미 있는 id는
-    건너뛰어서 새 site가 절대 안 채워진다. 원본 프레임을 다시 읽어 같은
+    site/url은 event_id()의 해시 키(app|window|start|text)에 안 들어가므로,
+    clean.py의 make_event()가 나중에 필드를 더 채우게 바뀌어도 기존 id가
+    그대로 유지된다 — 그래서 index_date()를 다시 돌려도 이미 있는 id는
+    건너뛰어서 새 필드가 절대 안 채워진다. 원본 프레임을 다시 읽어 같은
     id로 이벤트를 재구성한 뒤, 임베딩은 그대로 두고 metadata만 patch한다."""
     col = get_collection()
     dates = sorted(dates) if dates else sorted(indexed_dates())
@@ -183,14 +183,15 @@ def backfill_site(dates=None):
         existing = col.get(ids=ids, include=["metadatas"])
         update_ids, update_metas = [], []
         for eid, meta in zip(existing["ids"], existing["metadatas"]):
-            if meta.get("site") == unique[eid]["site"]:
+            patch = {f: unique[eid][f] for f in fields if meta.get(f) != unique[eid].get(f)}
+            if not patch:
                 continue  # 이미 같은 값 — 재실행해도 매번 새로 안 쓴다
             update_ids.append(eid)
-            update_metas.append({**meta, "site": unique[eid]["site"]})
+            update_metas.append({**meta, **patch})
 
         if update_ids:
             col.update(ids=update_ids, metadatas=update_metas)
-        print(f"[{date}] site 채움: {len(update_ids)}/{len(ids)}개")
+        print(f"[{date}] {'/'.join(fields)} 채움: {len(update_ids)}/{len(ids)}개")
 
 
 def backfill_site_from_source(dates, source_db):
@@ -226,7 +227,7 @@ def backfill_site_from_source(dates, source_db):
 
         update_ids, update_metas = [], []
         for eid, meta in zip(existing["ids"], existing["metadatas"]):
-            if meta.get("site"):
+            if meta.get("site") and meta.get("url"):
                 continue
             # meta의 start/end는 초 단위까지만 저장돼 있다(isoformat(timespec="seconds")).
             # 원본 프레임 타임스탬프는 마이크로초가 있어서, 프레임 쪽도 초 단위로
@@ -238,14 +239,15 @@ def backfill_site_from_source(dates, source_db):
                  and start <= f["t"].replace(microsecond=0) <= end),
                 None,
             )
-            site = site_from_url(match["url"]) if match else ""
-            if site:
+            url = (match["url"] or "") if match else ""
+            site = site_from_url(url)
+            if site or url:
                 update_ids.append(eid)
-                update_metas.append({**meta, "site": site})
+                update_metas.append({**meta, "site": site, "url": url})
 
         if update_ids:
             col.update(ids=update_ids, metadatas=update_metas)
-        print(f"[{date}] site 채움(원본 DB 매칭): {len(update_ids)}/{len(existing['ids'])}개")
+        print(f"[{date}] site/url 채움(원본 DB 매칭): {len(update_ids)}/{len(existing['ids'])}개")
 
     conn.close()
 

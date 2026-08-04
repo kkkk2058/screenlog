@@ -76,6 +76,11 @@ def make_event(lines, frames):
         "app": frames[0]["app"],
         "window": frames[0]["window"],
         "site": site_from_url(frames[0].get("url")),
+        # site(도메인)만 두면 "유튜브에서 뭐 봤어?" 답에 실제 영상 링크를 못
+        # 준다(실측: LLM이 제목으로 가짜 URL을 지어냄). 전체 URL을 같이
+        # 저장해서 근거로 답을 쓸 때 진짜 링크를 그대로 인용할 수 있게 한다.
+        # site와 마찬가지로 chroma metadata는 None을 못 받아 빈 문자열로 둔다.
+        "url": frames[0].get("url") or "",
         "frame_count": len(frames),
         # 사람이 읽는 용도
         "start": start.isoformat(timespec="seconds"),

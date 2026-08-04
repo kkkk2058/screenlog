@@ -56,6 +56,9 @@ PROMPT = """아래는 사용자의 컴퓨터 화면 사용 기록이다.
   단어가 없어도(예: "1시"라는 글자가 없어도) 그 근거로 답한다. 관련
   근거가 하나도 없을 때만 "기록에 없습니다"라고 답한다.
 - 답할 때 근거에 적힌 캡처 시각과 앱 이름을 그대로 밝힌다.
+- 링크를 물으면 근거에 "url:"로 적힌 값을 그대로 준다. 그 근거에 url이
+  없으면 지어내지 않고 "이 근거엔 링크가 없습니다"라고 답한다 — 제목이나
+  다른 정보로 url처럼 보이는 문자열을 만들어내지 않는다.
 - 이전 대화가 있고 현재 질문이 그 답변 내용을 더 설명해달라는 것이면(예:
   "더 자세히", "그거 무슨 뜻이야"), 이전 대화도 참고해서 답한다.
 """
@@ -147,7 +150,13 @@ def build_context(hits):
         text = hit["text"]
         if len(text) > CONTEXT_CHARS_PER_HIT:
             text = text[:CONTEXT_CHARS_PER_HIT] + " …(잘림)"
-        blocks.append(f"[{hit['start']}({weekday_ko(hit['start'])}), {hit['app']} / {hit['window']}]\n{text}")
+        header = f"[{hit['start']}({weekday_ko(hit['start'])}), {hit['app']} / {hit['window']}]"
+        # url이 있으면(브라우저 이벤트) 같이 보여준다 — 이게 없으면 "링크 줘"
+        # 같은 질문에서 LLM이 근거에 없는 URL을 그럴듯하게 지어낸다(실측:
+        # 영상 제목을 그대로 watch?v= 뒤에 붙인 가짜 링크).
+        if hit.get("url"):
+            header += f"\nurl: {hit['url']}"
+        blocks.append(f"{header}\n{text}")
     return "\n\n".join(blocks)
 
 
