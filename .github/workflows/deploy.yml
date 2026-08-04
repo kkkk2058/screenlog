@@ -38,12 +38,24 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
+      - name: Debug network reachability
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          echo "runner egress IP:"
+          curl -s https://checkip.amazonaws.com || true
+          echo "TCP 22:"
+          timeout 10 bash -c "cat < /dev/null > /dev/tcp/$EC2_HOST/22" && echo "PORT 22 OPEN" || echo "PORT 22 FAILED"
+          echo "TCP 8000:"
+          timeout 10 bash -c "cat < /dev/null > /dev/tcp/$EC2_HOST/8000" && echo "PORT 8000 OPEN" || echo "PORT 8000 FAILED"
+
       - name: SSH into EC2 and redeploy
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 60s
           script: |
             set -e
             cd /home/ubuntu/screenlog
