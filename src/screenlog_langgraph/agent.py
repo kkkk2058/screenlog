@@ -37,7 +37,7 @@ from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from screenlog.ask import ask as _ask
-from screenlog.config import API_KEY, BASE_URL, CHAT_MODEL, RETRIEVE_K
+from screenlog.config import AGENT_CHAT_MODEL, API_KEY, BASE_URL, RETRIEVE_K
 from screenlog.router import _APP_HINT, _SITE_HINT, _expand_period, _format_history, route
 from screenlog.source import LOCAL_TZ, weekday_ko
 from screenlog.summarize import compare_range as _compare_range
@@ -51,19 +51,10 @@ from screenlog.summarize import summarize_range as _summarize_range
 # 쉬운 형태를 도구 인터페이스로 쓰고, 내부에서 _expand_period()로
 # route()와 똑같이 날짜 리스트로 편다(뒤집힘 보정/최대 기간도 그대로 적용됨).
 
-_TOOL_DOC_SUFFIX = f"""
-
-app 후보(반드시 이 중 하나거나 비워둔다):
-{_APP_HINT}
-
-site 후보(브라우저 안에서 방문한 사이트, 반드시 이 중 하나거나 비워둔다):
-{_SITE_HINT}
-"""
-
-
 @tool(description="기간 안에서 특정 내용/대화/키워드를 찾아 답한다. \"며칠에 무슨 일 있었는지 "
                   "전부\"가 아니라 \"그 안의 특정 주제\"를 찾을 때 쓴다. start_date/end_date를 "
-                  "안 주면 전체 기록에서 찾는다 (YYYY-MM-DD, 둘 다 포함)." + _TOOL_DOC_SUFFIX)
+                  "안 주면 전체 기록에서 찾는다 (YYYY-MM-DD, 둘 다 포함). app/site 후보는 "
+                  "시스템 프롬프트 참고.")
 async def search_events(
     question: str,
     start_date: Optional[str] = None,
@@ -82,7 +73,7 @@ async def search_events(
                   "group_by=\"site\"로 주면 앱이 아니라 방문한 사이트 도메인별로 나눠서 센다"
                   "(예: \"크롬 안에서 뭘 많이 봤어\"류 질문엔 app=\"Google Chrome\", "
                   "group_by=\"site\"로 부른다). 도메인은 실제 URL에서 뽑은 값이라 "
-                  "site 후보 목록에 없는 사이트도 그대로 나온다." + _TOOL_DOC_SUFFIX)
+                  "site 후보 목록에 없는 사이트도 그대로 나온다.")
 def count_events(
     start_date: str, end_date: str, app: Optional[str] = None, site: Optional[str] = None,
     group_by: str = "app",
@@ -93,7 +84,7 @@ def count_events(
 
 
 @tool(description="기간 안에 있었던 일 전반을 하루씩 요약해서 그대로 이어붙인다. "
-                  "(YYYY-MM-DD, 둘 다 포함)" + _TOOL_DOC_SUFFIX)
+                  "(YYYY-MM-DD, 둘 다 포함)")
 async def summarize_days(
     start_date: str, end_date: str, app: Optional[str] = None, site: Optional[str] = None,
 ) -> str:
@@ -103,7 +94,7 @@ async def summarize_days(
 
 @tool(description="기간 안의 날짜들을 서로 비교해서 차이/경향/\"언제가 제일 ~했는지\"를 "
                   "판단한다. 하루씩 요약한 뒤 그 요약들을 다시 LLM으로 비교한다. "
-                  "(YYYY-MM-DD, 둘 다 포함)" + _TOOL_DOC_SUFFIX)
+                  "(YYYY-MM-DD, 둘 다 포함)")
 async def compare_days(
     question: str, start_date: str, end_date: str, app: Optional[str] = None, site: Optional[str] = None,
 ) -> str:
@@ -116,7 +107,7 @@ async def compare_days(
                   "\"작업기록\", \"핸드오프\" 같은 요청, 또는 \"내가 뭐까지 했는지 "
                   "다음에 이어받을 수 있게 정리해줘\"류 요청에 쓴다. 그냥 \"정리해줘\"는 "
                   "summarize_days를 써라 — 이건 인수인계 양식이 명시적으로 필요할 때만."
-                  "(YYYY-MM-DD, 둘 다 포함)" + _TOOL_DOC_SUFFIX)
+                  "(YYYY-MM-DD, 둘 다 포함)")
 async def draft_handover_doc(
     question: str, start_date: str, end_date: str, app: Optional[str] = None, site: Optional[str] = None,
 ) -> str:
@@ -144,7 +135,13 @@ _AGENT_SYSTEM_PROMPT = """사용자의 화면 사용 기록에 대한 복합 질
   바꾸거나 새 사실을 지어내지 않는다. 여러 도구 결과를 이어 붙이고 필요하면
   요약만 한다.
 - 날짜 말고 앱/사이트가 불확실하면(예: 후보 목록에 없는 이름) 도구를 부르기
-  전에 질문에서 다시 확인한다."""
+  전에 질문에서 다시 확인한다.
+
+app 후보(반드시 이 중 하나거나 비워둔다):
+{app_hint}
+
+site 후보(브라우저 안에서 방문한 사이트, 반드시 이 중 하나거나 비워둔다):
+{site_hint}"""
 
 
 def _plan_hint(plan):
@@ -176,11 +173,13 @@ def _agent_prompt(messages):
     # 매 호출 시점 기준으로 새로 계산해서 넣어야 한다 — 모듈 로드 시점에 한 번
     # 굳혀버리면 프로세스가 오래 떠 있을 때(서버 등) 날짜가 밀린다.
     today_str = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
-    system_text = _AGENT_SYSTEM_PROMPT.format(today=today_str, weekday=weekday_ko(today_str))
+    system_text = _AGENT_SYSTEM_PROMPT.format(
+        today=today_str, weekday=weekday_ko(today_str), app_hint=_APP_HINT, site_hint=_SITE_HINT,
+    )
     return [SystemMessage(content=system_text), *messages]
 
 
-_react_llm = ChatOpenAI(model=CHAT_MODEL, api_key=API_KEY, base_url=BASE_URL, temperature=0)
+_react_llm = ChatOpenAI(model=AGENT_CHAT_MODEL, api_key=API_KEY, base_url=BASE_URL, temperature=0)
 _react_llm_with_tools = _react_llm.bind_tools(_TOOLS)
 _tool_node = ToolNode(_TOOLS)
 

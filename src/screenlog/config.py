@@ -120,6 +120,15 @@ elif os.environ.get("ANTHROPIC_API_KEY"):
 else:
     raise RuntimeError("OPENAI_API_KEY 또는 ANTHROPIC_API_KEY 둘 중 하나는 있어야 한다.")
 
+# screenlog_langgraph.agent의 ReAct(멀티턴 tool-calling) 루프 전용 모델.
+# Gemini 3.x 계열은 함수 호출 응답에 thought_signature를 요구하는데, 이 게이트웨이의
+# OpenAI 호환 변환 레이어가 그 필드를 응답에서 통째로 누락시켜서(실측 확인됨) 두 번째
+# 턴부터 400으로 막힌다 — 우리 쪽에서 재전송할 값 자체가 없으니 코드로 못 고친다.
+# route()/graph.py처럼 한 턴짜리 구조화 출력은 문제 없어서 CHAT_MODEL을 그대로 두고,
+# 도구를 여러 턴 이어 부르는 agent.py만 OpenAI 계열(포맷 변환이 없어 이 문제가 원천적으로
+# 없음)의 가장 싼 모델로 분리했다.
+AGENT_CHAT_MODEL = "gpt-5.4-nano" if os.environ.get("OPENAI_API_KEY") else CHAT_MODEL
+
 # --- 실험 -------------------------------------------------------------
 # ask_auto()/stream_ask_auto()를 screenlog_langgraph 버전으로 바꿔서 쓸지.
 # 기본은 원본(screenlog.ask)이고, 환경변수로만 켠다 — api.py가 이 값 하나로
