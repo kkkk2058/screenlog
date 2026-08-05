@@ -25,8 +25,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from screenlog import chat_history, summary_cache
-from screenlog.config import AI_APPS, HISTORY_TURNS, SCREENLOG_PASSWORD, SCREENLOG_USER, USE_LANGGRAPH
+from screenlog import chat_history, slack_client, summary_cache
+from screenlog.config import (
+    AI_APPS,
+    HISTORY_TURNS,
+    SCREENLOG_PASSWORD,
+    SCREENLOG_USER,
+    SLACK_BOT_TOKEN,
+    SLACK_DEFAULT_CHANNEL,
+    USE_LANGGRAPH,
+)
 from screenlog.source import weekday_ko
 from screenlog.stats import build_stats, build_timeline
 from screenlog.summarize import summarize_day
@@ -110,6 +118,11 @@ class AskRequest(BaseModel):
     # history 필드는 없다 — 팔로우업 맥락은 서버가 conversation_id로 자기
     # DB(chat_history)를 직접 읽어서 만든다. 예전엔 클라이언트가 최근 대화를
     # 통째로 매번 재전송했는데, 서버가 이미 저장해둔 걸 다시 보내는 중복이었다.
+
+
+class SlackSendRequest(BaseModel):
+    text: str
+    channel: str | None = None   # None이면 SLACK_DEFAULT_CHANNEL을 쓴다
 
 
 @app.get("/")
@@ -284,3 +297,24 @@ def api_conversations():
 def api_conversation_messages(conversation_id: str):
     """그 대화를 다시 열었을 때 채팅창에 재생할 메시지 전체."""
     return {"messages": chat_history.get_messages(conversation_id)}
+
+
+@app.post("/api/slack/send")
+async def api_slack_send(req: SlackSendRequest):
+    """draft_slack_message가 만든 초안을 실제로 슬랙에 보낸다.
+
+    LLM/에이전트는 이 엔드포인트를 모른다 — 프론트에서 사용자가 초안을 보고
+    "보내기"를 눌렀을 때만 호출되는 경로다. 자동 승인 감지(예: 다음 메시지가
+    "응"이면 직전 초안을 전송) 같은 휴리스틱은 일부러 안 넣었다 — 오탐(사용자가
+    "응"이라고 한 게 다른 의도였는데 실제 전송이 나가는 사고)이 나면 되돌릴 수
+    없는 행동이라, 명시적 버튼 클릭만 신뢰한다."""
+    if not SLACK_BOT_TOKEN:
+        raise HTTPException(status_code=501, detail="SLACK_BOT_TOKEN이 설정되지 않았습니다.")
+    channel = req.channel or SLACK_DEFAULT_CHANNEL
+    if not channel:
+        raise HTTPException(status_code=400, detail="channel을 지정하거나 SLACK_DEFAULT_CHANNEL을 설정하세요.")
+    try:
+        await slack_client.post_message(channel, req.text)
+    except slack_client.SlackError as e:
+        raise HTTPException(status_code=502, detail=f"슬랙 전송 실패: {e}")
+    return {"sent": True, "channel": channel}

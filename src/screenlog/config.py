@@ -129,6 +129,16 @@ else:
 # 없음)의 가장 싼 모델로 분리했다.
 AGENT_CHAT_MODEL = "gpt-5.4-nano" if os.environ.get("OPENAI_API_KEY") else CHAT_MODEL
 
+# --- 슬랙 연동 -----------------------------------------------------------
+# draft_slack_message(agent.py 도구)는 LLM이 자유롭게 부를 수 있지만, 실제
+# 전송(execute)은 LLM에 도구로 안 준다 — 에이전트가 "승인된 것 같다"고
+# 스스로 판단해서 자동으로 실제 메시지를 보내면 사고가 난다. 전송은 반드시
+# 프론트에서 사용자가 초안을 보고 명시적으로 "보내기"를 눌렀을 때만 호출되는
+# 별도 API 엔드포인트(/api/slack/send)를 거친다. 토큰이 없으면 그 엔드포인트가
+# 501로 막는다(민감정보라 값 자체는 로그에 안 남긴다).
+SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
+SLACK_DEFAULT_CHANNEL = os.environ.get("SLACK_DEFAULT_CHANNEL")
+
 # --- 실험 -------------------------------------------------------------
 # ask_auto()/stream_ask_auto()를 screenlog_langgraph 버전으로 바꿔서 쓸지.
 # 기본은 원본(screenlog.ask)이고, 환경변수로만 켠다 — api.py가 이 값 하나로
