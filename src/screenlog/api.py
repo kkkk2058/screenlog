@@ -26,19 +26,26 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from screenlog import chat_history, summary_cache
-from screenlog.config import AI_APPS, SCREENLOG_PASSWORD, SCREENLOG_USER, USE_LANGGRAPH
+from screenlog.config import AI_APPS, HISTORY_TURNS, SCREENLOG_PASSWORD, SCREENLOG_USER, USE_LANGGRAPH
 from screenlog.source import weekday_ko
 from screenlog.stats import build_stats, build_timeline
 from screenlog.summarize import summarize_day
 import json
 from fastapi.responses import StreamingResponse
 
-# ask_auto/stream_ask_auto 구현을 USE_LANGGRAPH 환경변수로 고른다. 둘의
+# ask_auto/stream_ask_auto 구현을 USE_LANGGRAPH 환경변수로 고른다. 셋 다
 # 시그니처와 반환/이벤트 형태가 동일해서(screenlog_langgraph/graph.py 참고)
 # 아래 라우트 코드는 어느 쪽이 켜져 있든 손댈 필요가 없다 — A/B든 롤백이든
 # 이 한 줄의 분기로 끝난다.
+#
+# screenlog_langgraph.graph(고정 경로만) 대신 screenlog_langgraph.agent를
+# 쓴다 — agent.py는 고정 경로일 땐 graph.py를 그대로 호출하므로(내부
+# _fixed_node) graph.py가 하던 일을 전부 포함하는 상위 호환이고, 그 위에
+# route()가 4갈래로 못 답하는 복합 질문(인수인계 문서 등)을 처리하는
+# 에이전트 루프가 추가로 있다. graph.py를 계속 쓰면 이 에이전트 경로
+# 자체가 실제 서비스에서 한 번도 안 불린다.
 if USE_LANGGRAPH:
-    from screenlog_langgraph.graph import ask_auto, stream_ask_auto
+    from screenlog_langgraph.agent import ask_auto, stream_ask_auto
 else:
     from screenlog.ask import ask_auto, stream_ask_auto
 
@@ -97,15 +104,12 @@ if DOWNLOAD_DIR.exists():
 EXCERPT = 200   # 근거 본문은 이만큼만 내보낸다
 
 
-class HistoryTurn(BaseModel):
-    question: str
-    answer: str
-
-
 class AskRequest(BaseModel):
     question: str
-    history: list[HistoryTurn] = []
     conversation_id: str | None = None   # None이면 새 대화로 취급, 서버가 하나 발급한다
+    # history 필드는 없다 — 팔로우업 맥락은 서버가 conversation_id로 자기
+    # DB(chat_history)를 직접 읽어서 만든다. 예전엔 클라이언트가 최근 대화를
+    # 통째로 매번 재전송했는데, 서버가 이미 저장해둔 걸 다시 보내는 중복이었다.
 
 
 @app.get("/")
@@ -216,6 +220,9 @@ async def api_ask_stream(req: AskRequest):
     # conversation_id가 없으면 이 질문이 새 대화의 시작이다 — 여기서 만들어서
     # 첫 이벤트로 클라이언트에 알려준다(사이드바에 표시될 id가 이거다).
     conv_id = req.conversation_id or chat_history.create_conversation(req.question)
+    # 이번 질문을 저장하기 전에 먼저 히스토리를 읽는다 — 순서를 바꾸면
+    # 방금 들어온 질문 자신이 "이전 대화"로 잡혀서 중복된다.
+    history = chat_history.get_recent_turns(conv_id, limit=HISTORY_TURNS)
     chat_history.add_message(conv_id, "user", req.question)
 
     async def event_generator():
@@ -225,7 +232,6 @@ async def api_ask_stream(req: AskRequest):
             # stream_ask_auto()가 route()로 라우팅하고 intent(검색/정리/비교/집계)에
             # 따라 ask_auto()와 같은 함수로 답을 만든 뒤 plan/hits/token/done
             # 이벤트로 쪼개서 넘겨준다 — 여기서는 그걸 SSE로 포장하기만 한다.
-            history = [{"question": h.question, "answer": h.answer} for h in req.history]
             async for item in stream_ask_auto(req.question, history=history):
                 if item["type"] == "hits":
                     hits_out = []

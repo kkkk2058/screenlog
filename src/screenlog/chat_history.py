@@ -95,3 +95,27 @@ def get_messages(conversation_id):
             (conversation_id,),
         ).fetchall()
     return [{"role": r[0], "content": r[1]} for r in rows]
+
+
+def get_recent_turns(conversation_id, limit=None):
+    """팔로우업 질문 해석용 (question, answer) 턴 목록 — route()/에이전트가
+    "그날"/"더 자세히" 같은 지시어를 풀 때 쓴다.
+
+    예전엔 이걸 브라우저가 CONV_HISTORY로 따로 들고 있다가 매 질문마다
+    통째로 다시 보냈다 — 근데 서버가 이미 messages 테이블에 다 저장해두고
+    있으니, 그걸 다시 읽는 게 클라이언트가 매번 재전송하는 것보다 낫다
+    (네트워크 왕복 없음, 브라우저 상태와 어긋날 일도 없음).
+
+    messages는 user/assistant가 번갈아 쌓인다. 답변 생성 중 에러가 나면
+    user만 저장되고 assistant가 안 붙는 턴이 생길 수 있어서, 짝이 안 맞는
+    메시지는 건너뛴다."""
+    messages = get_messages(conversation_id)
+    turns = []
+    i = 0
+    while i + 1 < len(messages):
+        if messages[i]["role"] == "user" and messages[i + 1]["role"] == "assistant":
+            turns.append({"question": messages[i]["content"], "answer": messages[i + 1]["content"]})
+            i += 2
+        else:
+            i += 1
+    return turns[-limit:] if limit else turns

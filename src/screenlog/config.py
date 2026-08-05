@@ -72,6 +72,11 @@ MAX_EVENTS_PER_DAY_SUMMARY = 60
 # 왼쪽 사이드바에서 이전 대화를 다시 열어볼 수 있게 한다.
 CHAT_HISTORY_DB = Path(CHROMA_DIR) / "chat_history.sqlite"
 
+# 팔로우업 해석("그날"/"더 자세히" 등)에 쓸 최근 턴 수. 클라이언트가 매번
+# 재전송하던 걸 서버가 자기 DB(chat_history)에서 직접 읽도록 바꾸면서 생긴
+# 값 — 예전엔 이 숫자가 dashboard.html의 HISTORY_SEND_TURNS였다.
+HISTORY_TURNS = 5
+
 # --- 하루 요약 캐시 ---------------------------------------------------
 # "이번주 정리해줘"는 하루당 LLM 1번 + browse() 1번이라 7일이면 6초가 넘는다.
 # 지난 날의 기록은 더 안 변하므로 요약을 미리 만들어 두고 꺼내 쓴다.
