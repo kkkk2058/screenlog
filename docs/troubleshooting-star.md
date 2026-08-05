@@ -868,3 +868,387 @@ patch할지 — 둘 다 풀어야 했다.
 > 실제로 있는지)를 직접 열어보고서야 마이크로초 문제라는 걸 확인할 수
 > 있었다. 초 단위로 잘라 저장한 필드와, 마이크로초를 그대로 들고 있는
 > 필드를 비교할 땐 둘 중 하나를 반드시 같은 정밀도로 맞춰야 한다.
+
+---
+
+## 16. 프로덕션 API가 인증 없이 인터넷에 그대로 노출돼 있던 문제
+
+**Situation**
+`api.py` 맨 위 주석엔 "화면 기록엔 메신저 대화와 로그인 화면이 섞여 있다.
+외부에 공개할 때는 127.0.0.1 바인딩과 인증을 먼저 붙여야 한다"고 이미
+적혀 있었다. 그런데 실제 코드엔 인증 로직이 전혀 없었고(`Authorization`/
+`HTTPBasic`/미들웨어 grep 결과 0건), `docs/ec2-deployment-guide.md`와
+`distribution/mac/menubar/app.py`에 하드코딩된 `EC2_HOST = "43.202.158.8"`을
+보면 이미 퍼블릭 EC2에 배포까지 끝난 상태였다. `docker-compose.prod.yml`은
+`8000:8000`으로 모든 인터페이스에 바인딩되고, 보안그룹도 8000번을
+`0.0.0.0/0`으로 열어두고 있었다.
+
+**Task**
+누구든 IP만 알면(이미 커밋된 소스에 그대로 노출) `/api/ask`,
+`/api/conversations`로 화면 기록 전체를 조회할 수 있는 상태라, 최소
+인증을 즉시 붙여야 했다. 브라우저에서 별도 로그인 페이지 없이 바로
+붙일 수 있는 방식이 필요했다.
+
+**Action**
+- FastAPI에 `BasicAuthMiddleware`를 추가했다. 팀 배포용 설치 페이지
+  (`/download`)와 정적 리소스(`/static`, css/이미지뿐)만 공개 예외로
+  두고, `/api/*`를 포함한 나머지 전부를 막았다.
+- `secrets.compare_digest`로 비교해 타이밍 공격(문자 단위 응답시간
+  차이로 비밀번호를 추측하는 공격)을 막았다.
+- `SCREENLOG_USER`/`SCREENLOG_PASSWORD`가 `.env`에 없으면 `config.py`가
+  `RuntimeError`로 아예 기동을 거부하게 했다 — "일단 띄우고 나중에
+  잠그자"가 이번처럼 반복될 여지를 코드 레벨에서 없앴다.
+
+**Result**
+로컬에서 실제 서버를 띄워 `curl`로 검증: 인증 없이 `/`, `/api/stats`
+호출 시 `401`, 올바른 계정으로는 `200`, `/static`·`/download`는
+인증 없이도 `200` — 의도한 대로 동작 확인.
+
+> 코드에 위험을 이미 알고 있다는 주석까지 남겨뒀는데도 실제로는 안
+> 막혀 있었다. **"알고 있다"와 "막혀 있다"는 다르다** — 위험을 인지한
+> 주석은 그 자체로 안전장치가 아니라, 아직 안 끝난 할 일 목록일 뿐이다.
+
+---
+
+## 17. 배포 파이프라인이 막혀서 코드는 있는데 반영이 안 되던 문제 — 그리고 그 와중에 만든 새 사고
+
+**Situation**
+16번의 인증 미들웨어를 커밋·푸시했는데, GitHub Actions의 배포 스텝이
+`dial tcp ***:22: i/o timeout`으로 실패했다. 로컬 맥에서 같은 IP로
+SSH를 시도하면 바로 접속됐다.
+
+**Task**
+"로컬은 되는데 CI만 안 된다"는 증상이니, AWS 쪽에서 GitHub Actions
+러너만 걸러내는 지점이 있는지 계층별로 하나씩 지워가며 찾아야 했다.
+
+**Action**
+1. **보안 그룹**을 봤다 — 22/8000/443 전부 `0.0.0.0/0`으로 열려 있었다.
+   범인이 아니었다.
+2. **EC2 인스턴스 안**에 들어가서(콘솔의 EC2 Instance Connect로 —
+   SSH 자체가 의심 대상이라 SSH 말고 이 경로를 썼다) `iptables -L -n -v`를
+   봤다. `INPUT` 체인이 정책 `ACCEPT`에 규칙이 아예 없었다. 범인이
+   아니었다.
+3. **fail2ban**을 의심했지만 애초에 설치돼 있지 않았다(`Unit
+   fail2ban.service could not be found`). `sshd`도 `0.0.0.0:22`에
+   정상적으로 리스닝 중이었다.
+4. **VPC 네트워크 ACL**(보안 그룹과 별개로 서브넷 단위에 걸리는
+   방화벽)을 콘솔에서 확인했다 — 규칙 100번이 전체 허용, 나머지는
+   기본 폴백이라 사실상 전면 개방 상태였다. 이것도 아니었다.
+5. AWS/EC2 쪽에서 볼 수 있는 건 다 지웠으니, **워크플로우 자체에
+   진단 스텝**을 추가해 GitHub Actions 러너가 실제로 어디서 막히는지
+   직접 찍어봤다.
+   ```bash
+   curl -s https://checkip.amazonaws.com   # 러너의 실제 아웃바운드 IP
+   timeout 10 bash -c "cat < /dev/null > /dev/tcp/$EC2_HOST/22"
+   timeout 10 bash -c "cat < /dev/null > /dev/tcp/$EC2_HOST/8000"
+   ```
+   결과: 러너 IP는 `13.87.231.103`(Microsoft Azure — GitHub 호스팅
+   러너는 Azure에서 돈다), **22번과 8000번 둘 다 `FAILED`**. SSH만의
+   문제가 아니라 이 인스턴스 자체가 그 IP 대역에서 통째로 안 보인다는
+   뜻이었다.
+
+**Result**
+보안 그룹·NACL·호스트 방화벽·fail2ban·sshd 상태까지, AWS 콘솔과 EC2
+내부에서 확인 가능한 모든 계층이 정상이었는데도 GitHub Actions(Azure
+대역)에서만 재현되게 막혀 있었다. 이건 콘솔에 안 보이는 상위 네트워크
+구간(리전 ISP의 abuse/스캔 트래픽 필터링 등)의 문제로 추정되며,
+**미해결로 남겼다** — 확인하려면 AWS 지원팀 문의가 필요하다. 당장은
+자동배포 대신 SSH로 직접 접속해 수동으로 `docker compose pull && up -d`를
+실행하는 우회로 급한 불을 껐다.
+
+그런데 이 수동 배포 과정에서 **새로운 사고**가 하나 났다. 인증 미들웨어만
+커밋하려고 `git add src/screenlog/api.py src/screenlog/config.py`를
+했는데, `config.py`엔 이번 작업과 무관한 로컬 미커밋 변경
+(`USE_LANGGRAPH = os.environ.get(...)` 환경변수 방식을 `USE_LANGGRAPH=True`
+하드코딩으로 바꿔둔 상태)이 이미 있었다. `git add`는 파일 단위로 현재
+작업트리 내용을 통째로 스테이징하기 때문에, 내가 만든 diff뿐 아니라 그
+무관한 변경까지 같이 커밋에 실렸다. 그 상태로 배포하니, `Dockerfile`이
+`uv sync --frozen --no-dev`만 실행해서 `langgraph`(선택적 extra라 기본
+설치 대상이 아님)가 이미지에 없는데 `USE_LANGGRAPH=True`가 강제로 그
+경로를 타면서 컨테이너가 `ModuleNotFoundError`로 계속 크래시했다 — 인증을
+붙이려다 서비스 전체를 잠깐 완전히 내려버린 것이다.
+
+`docker compose logs`로 원인을 확인하고 `USE_LANGGRAPH`를 원래의
+환경변수 방식(기본 꺼짐)으로 되돌려 재배포, 인증 없이 `401`/올바른
+계정으로 `200`이 나오는 것까지 재확인하고 마무리했다.
+
+> 두 가지 교훈이 겹쳤다. 하나, **CI 환경에서 되는지는 CI에서 직접
+> 찍어봐야 안다** — 로컬에서 되니까 될 거라는 가정은 여기서도(6번,
+> 9번 항목과 같은 패턴) 틀렸다. 둘, **"이 파일만 커밋한다"는 "이
+> diff만 커밋한다"와 다르다** — `git add <파일>`은 그 파일의 현재
+> 작업트리 전체를 스테이징하므로, 커밋 전엔 `git diff --cached`로
+> 실제 올라가는 내용 전체를 봐야 무관한 변경이 몰래 끼어드는 걸
+> 막을 수 있다.
+
+---
+
+## 18. `uv.lock`을 커밋 안 해서 프로덕션 빌드가 계속 실패하던 문제
+
+**Situation**
+EC2 IP를 바꾸는 김에 GitHub Actions 배포 로그를 봤더니, 최근 배포 4건이
+전부 `failure`였다(`gh run list`). Docker 빌드 로그를 보니 5단계에서
+이렇게 죽고 있었다.
+```
+error: Extra `langgraph-agent` is not defined in the `optional-dependencies` table for `screenlog`
+ERROR: process "/bin/sh -c uv sync --frozen --no-dev --no-install-project --extra langgraph-agent" did not complete successfully: exit code: 2
+```
+
+**Task**
+`pyproject.toml`엔 `langgraph-agent` extra가 분명히 정의돼 있었다
+(`langgraph-agent = ["langgraph>=0.2", "langchain-core>=0.3", "langchain-openai>=0.3"]`).
+정의는 있는데 왜 없다고 하는지 원인을 찾아야 했다.
+
+**Action**
+- `git show HEAD:pyproject.toml`로 커밋된 버전을 확인 — extra 정의가
+  똑같이 있었다. `pyproject.toml`은 범인이 아니었다.
+- `--frozen` 플래그가 단서였다 — 이 옵션은 `uv.lock`을 그대로 신뢰하고
+  검증하는 모드다. `git show HEAD:uv.lock | grep -c "langgraph-agent"`를
+  돌려보니 **0건**. 로컬 작업트리의 `uv.lock`(아직 미커밋 상태, `git status`에
+  `M`으로 떠 있었다)엔 5건 있었다.
+- 즉 `pyproject.toml`에 extra를 추가하고 `uv lock`으로 로컬 lock 파일은
+  재생성했지만, **그 갱신된 `uv.lock`을 커밋한 적이 없었다.** CI가
+  체크아웃하는 건 옛 lock 파일이라, extra 정의와 lock 파일이 서로
+  어긋나 있었던 것.
+
+**Result**
+`git add uv.lock && git commit`으로 갱신된 lock 파일을 커밋하자 다음
+배포부터 정상 통과했다.
+
+> `pyproject.toml`을 고치면 반드시 `uv.lock`도 같이 커밋해야 한다는
+> 건 알고 있었지만, **로컬에서 `uv run`/`uv sync`가 계속 잘 되니까
+> lock 파일이 최신인 줄 착각했다** — 로컬은 `--frozen` 없이 도니
+> lock이 낡아도 티가 안 난다. `--frozen`을 쓰는 CI에서만 드러나는
+> 종류의 드리프트라, 로컬에서 되는지만으로는 절대 못 잡는다(17번과
+> 같은 패턴이 세 번째로 반복됨).
+
+---
+
+## 19. EC2 IP를 바꿨는데 배포는 옛 IP로 계속 접속을 시도하던 문제
+
+**Situation**
+18번을 고치고 재배포했더니 이번엔 다른 단계에서 실패했다.
+```
+Downloading drone-ssh-1.8.2-linux-amd64 ...
+2026/08/05 06:10:33 dial tcp ***:22: i/o timeout
+Error: Process completed with exit code 1.
+```
+같은 세션에서 방금 EC2 인스턴스의 퍼블릭 IP가 바뀐 참이었다
+(`54.116.52.38`). 소스코드(`distribution/mac/menubar/app.py`의
+`EC2_HOST`)는 이미 새 IP로 고쳐둔 상태였다.
+
+**Task**
+소스코드는 이미 최신인데 왜 여전히 접속을 못 하는지 확인해야 했다.
+
+**Action**
+- `.github/workflows/deploy.yml`을 보니 SSH 접속 대상이 소스코드가
+  아니라 **GitHub Actions 저장소 시크릿** `secrets.EC2_HOST`에서
+  왔다(`host: ${{ secrets.EC2_HOST }}`).
+- `gh secret list`로 확인하니 `EC2_HOST`의 마지막 갱신 시각이 IP가
+  바뀌기 **전**이었다 — 이 시크릿은 여전히 옛 IP를 가리키고 있었다.
+  코드에 있는 `EC2_HOST` 상수를 고친 건 맥 메뉴바 앱이 직접 참조하는
+  완전히 별개의 값이라, 이걸 고쳤다고 CI의 시크릿까지 같이 바뀌지
+  않는다.
+
+**Result**
+```
+gh secret set EC2_HOST --body "54.116.52.38"
+```
+로 시크릿을 갱신하자 다음 배포부터 정상적으로 SSH 접속에 성공했다.
+
+> 같은 값("EC2 IP")이 코드 안에 상수로도, CI 시크릿으로도, 사람 머릿속
+> 기억으로도 따로따로 존재하고 있었다 — 하나를 고쳤다고 나머지가 같이
+> 안 바뀐다. 이런 "같은 사실을 가리키는 값이 여러 곳에 흩어져 있는"
+> 구조는 IP가 또 바뀌면 똑같은 사고가 반복될 여지가 있다.
+
+---
+
+## 20. `/api/ask`에 예외 처리가 없어서, 이 경로만 스택트레이스가 그대로 나갔다
+
+**Situation**
+LangGraph 그래프 설계를 리뷰하던 중(제안받은 4가지 지적 사항을 코드로
+하나씩 검증하는 과정에서) `classify` 노드가 `route()`를 호출하는데,
+`route()`의 LLM API 호출부(`await client.chat.completions.create(...)`)엔
+try/except가 없다는 걸 발견했다. JSON 파싱 실패는 이미 방어돼 있었지만
+(`json.JSONDecodeError` → 안전한 기본 plan으로 폴백), API 호출 자체가
+타임아웃/레이트리밋으로 실패하는 경우는 안 잡혀 있었다.
+
+**Task**
+이 예외가 실제로 각 엔드포인트에서 어떻게 처리되는지 확인이 필요했다.
+
+**Action**
+- `/api/ask/stream`은 SSE 제너레이터 안에 `except Exception as e`가
+  있어서 `{"type":"error", "message":str(e)}`로 정리돼 나간다 — 방어됨.
+- `/api/ask`(논스트리밍)는 `answer, plan, hits = await ask_auto(...)`를
+  그냥 호출만 하고 있어서, 여기서 예외가 나면 FastAPI 기본 핸들러가
+  스택트레이스 섞인 500을 그대로 돌려준다 — **방어 안 됨**. 두 엔드포인트가
+  같은 `ask_auto`/`route()`를 쓰는데 한쪽만 안 막혀 있었다.
+
+**Result**
+`/api/ask`에도 같은 형태의 `try/except`를 추가해 `HTTPException(500,
+detail=str(e))`로 정리했다. `route()`/`chat_history` 실패를 강제로
+주입해서(몽키패치) 두 엔드포인트가 이제 동일한 방식으로 반응하는 걸
+직접 확인했다.
+
+> 같은 실패(LLM API 오류)를 처리하는 경로가 두 개(스트리밍/논스트리밍)
+> 있으면, 하나를 고칠 때 반드시 "다른 쪽도 똑같이 방어돼 있나"를
+> 확인해야 한다 — 이번엔 나중에 추가된 스트리밍 경로만 방어되고,
+> 먼저 있던 논스트리밍 경로가 방치돼 있었다.
+
+---
+
+## 21. 게이트웨이가 Gemini 응답의 `thought_signature`를 누락시켜 멀티턴 도구 호출이 막히던 문제
+
+**Situation**
+에이전트 경로(ReAct 루프)로 "이번주 유튜브 몇 번 봤는지랑 어떤 영상
+봤는지 같이 알려줘"처럼 도구를 2개 이상 이어 부르는 질문을 테스트하니
+두 번째 LLM 턴에서 이렇게 죽었다.
+```
+openai.BadRequestError: Error code: 400 - ... 'Function call is missing
+a thought_signature in functionCall parts. This is required for tools
+to work correctly ...'
+```
+단일 도구 호출(`shortcut` 경로)로 끝나는 질문은 멀쩡했다 — 두 번째
+LLM 호출이 실제로 발생할 때만 재현됐다.
+
+**Task**
+이게 이쪽 코드의 버그인지, 아니면 게이트웨이/모델 쪽 문제라 우리가
+못 고치는 것인지부터 가려야 했다.
+
+**Action**
+- `git stash`로 방금 만든 변경(프롬프트 중복 제거)을 되돌리고 같은
+  질문을 다시 돌려봤다 — **똑같이 실패**. 방금 만든 변경 탓이 아니었다.
+- `_react_llm_with_tools.ainvoke(...)`가 돌려준 원본 응답의
+  `additional_kwargs`/`response_metadata`를 직접 까봤다 — `thought_signature`에
+  해당하는 필드가 **응답 어디에도 없었다**. 우리 쪽이 뭔가를 빠뜨리고
+  안 보내는 게 아니라, 게이트웨이가 Gemini 원본 응답을 OpenAI 호환
+  포맷으로 변환하면서 그 필드 자체를 버리고 있었다 — 애초에 우리한테
+  도달하지 않는 값이라 다음 턴에 재전송할 방법이 없었다.
+- 이건 OpenAI 호환 프록시가 흔히 겪는 알려진 문제(LiteLLM도 Gemini
+  2.5+/3.x thinking 모델용으로 이 패스스루를 나중에 따로 추가했다)라,
+  게이트웨이 자체를 고치는 건 이 repo 밖의 일이었다.
+
+**Result**
+`route()`/`graph.py`(단발성 구조화 출력)는 그대로 Gemini 게이트웨이를
+쓰고, **멀티턴 도구 호출이 필요한 ReAct 루프(agent.py)만** 별도
+모델(`AGENT_CHAT_MODEL`, OpenAI 계열 `gpt-5.4-nano` — 포맷 변환이 없어
+이 문제가 원천적으로 없음)로 분리했다. 같은 멀티턴 질문을 다시 돌려서
+정상적으로 두 도구를 순서대로 호출하고 답을 합치는 것까지 확인했다.
+
+> 실패가 "방금 내가 고친 것 때문"처럼 보일 때, `git stash`로 그 변경을
+> 걷어내고 똑같이 재현되는지부터 확인하면 범위를 빠르게 좁힐 수 있다.
+> 그리고 "우리 코드가 값을 잘못 다루고 있다"와 "그 값 자체가 우리한테
+> 안 온다"는 겉보기엔 같은 에러(400)로 보여도 고치는 방법이 완전히
+> 다르다 — 후자는 재시도/파싱 수정으로 못 고친다.
+
+---
+
+## 22. 슬랙 초안 기능 — "그거 슬랙에 보내자"가 엉뚱한 내용으로 새던 문제
+
+**Situation**
+화면 기록을 슬랙 메시지 초안으로 만들어주는 도구(`draft_slack_message`)를
+추가했다. "준혁이랑 톡한것만 정리해줘" → (정확한 답변) → "슬랙에
+보내자"로 이어 물었더니, 방금 정리한 준혁이 얘기가 아니라 **완전히
+무관한 내용**("EC2 서버 환경 구축 및 CI/CD 파이프라인...")이 슬랙
+초안으로 나왔다.
+
+**Task**
+후속 요청("슬랙에 보내자")이 왜 직전 답변을 무시하고 새 내용을
+지어내는지 원인을 찾고, 재발하지 않게 고쳐야 했다.
+
+**Action**
+- `draft_slack_message`는 항상 `start_date`/`end_date`로 **새로
+  조회**하는 구조였다. "슬랙에 보내자"처럼 주제/기간 언급이 없는
+  요청이 오면, LLM이 대화 히스토리(텍스트 한 덩어리로 프롬프트에
+  얹혀 있음)에서 "무슨 필터로 다시 조회해야 하는지"를 스스로
+  추론해야 했는데, 이 추론이 틀리면서 그날 있었던 **다른** 활동을
+  요약해버린 것이었다.
+- **1차 시도**: 도구에 `source_text`(선택) 파라미터를 추가해서 LLM이
+  직전 답변을 그 인자에 옮겨 담게 하려 했다. 근데 이건 LLM이 텍스트를
+  "복사"가 아니라 "다시 타이핑(재생성)"해야 한다는 뜻이라, 원래
+  버그(내용이 틀어짐)와 **같은 종류의 리스크**를 새 파라미터 하나에
+  옮겨 심는 것뿐이었다 — 채택 전에 스스로 기각.
+- **재설계**: LangGraph의 `InjectedState`를 썼다. `ReactState`에
+  `history` 필드를 추가하고, `draft_slack_message(..., history:
+  Annotated[Optional[list], InjectedState("history")])`로 코드가
+  `history[-1]["answer"]`를 **직접** 꺼내 쓰게 했다. LLM이 할 일은
+  "새로 조회할지(날짜를 준다)/재사용할지(날짜를 비운다)" 이진 판단
+  하나로 줄었고, 재사용을 택했을 때 내용이 틀릴 여지(재생성 과정에서의
+  드리프트) 자체가 없어졌다.
+
+**Result**
+같은 시나리오("준혁이 톡 정리" → "슬랙에 보내자")를 재실행하니 준혁이
+관련 내용만 정확히 재포맷된 슬랙 초안이 나왔다. 다만 곧바로 **잔여
+한계**를 하나 더 발견했다 — 직전 항목(`history[-1]`)이 실제 내용이
+아니라 도구가 "기록을 못 찾았어요, 어떻게 할까요?" 같은 **되묻는
+답변**이었던 경우, 그걸 그대로 재포맷하니 알맹이 없는 일반론이
+나왔다. `history[-1]`을 무조건 신뢰하는 것 자체가 남은 약점으로
+확인됐고, 아직 미해결로 남겨뒀다.
+
+> 첫 해결책이 "일단 되게는 만들지만 원래 버그와 같은 종류의 리스크를
+> 다른 자리로 옮기는" 형태일 수 있다 — 채택하기 전에 "이 수정이
+> 실패하는 방식이 원래 버그가 실패하던 방식과 같은가"를 자문해볼
+> 가치가 있다. 그리고 버그를 고쳤다고 그 주변이 전부 안전해지는 건
+> 아니다 — `history[-1]`을 코드가 직접 꺼내 쓰게 만든 것 자체는
+> 맞는 방향이었지만, "그 직전 항목이 신뢰할 만한 내용인가"라는
+> 새로운 전제가 생겼고 이건 아직 검증되지 않았다.
+
+---
+
+## 23. `get_model()`이 `get_collection()`과 똑같은 레이스에 노출돼 있었다 — 코드 리뷰로 발견
+
+**Situation**
+`index.py`의 `get_collection()`은 13번 항목(tool-calling 에이전트가 도구를
+동시에 호출하면서 chromadb `SharedSystemClient`가 깨졌던 사고)을 겪은 뒤
+`threading.Lock` + 이중 체크로 고쳐져 있었다. 그런데 주석/독스트링을
+배제하고 코드 동작만 기준으로 다시 훑어보니, 바로 위에 있는
+`get_model()`(임베딩 모델 lazy singleton)이 **정확히 같은 패턴인데 락이
+없었다**.
+```python
+def get_model():
+    global _model
+    if _model is None:
+        _model = SentenceTransformer(EMBEDDING_MODEL)
+    return _model
+```
+
+**Task**
+"에이전트의 병렬 도구 호출까지 안 가도 재현되는가"부터 확인해야 했다.
+`embed()`가 `get_model()`을 부르고, `embed()`는 `ask.py`의 `search()`가
+검색 질의마다 부른다 — 즉 에이전트뿐 아니라 **일반 HTTP 요청 두 개가
+서버 기동 직후(모델이 아직 안 실린 시점) 거의 동시에 검색 intent로
+들어오기만 해도** `SentenceTransformer(...)` 생성자가 두 번 탈 수 있는
+구조였다. 13번 항목의 사고 원인과 결과만 다를 뿐 코드 패턴은 동일했다.
+
+**Action**
+`get_collection()`과 완전히 같은 이중 체크 락 패턴으로 맞췄다 — 새 락
+객체(`_model_lock`) 하나만 추가하고, `threading`은 이미 같은 파일에서
+`_collection_lock`용으로 import돼 있어 추가 import가 필요 없었다.
+```python
+_model = None
+_model_lock = threading.Lock()
+
+def get_model():
+    global _model
+    if _model is not None:
+        return _model
+    with _model_lock:
+        if _model is None:
+            _model = SentenceTransformer(EMBEDDING_MODEL)
+    return _model
+```
+락 밖에서 먼저 확인하는 이유는 그대로 유지했다 — 이미 로드된 뒤(대부분의
+호출)엔 락 비용 없이 바로 리턴하고, `_model`이 아직 `None`인 아주 짧은
+초기 구간에서만 락을 타게 된다.
+
+**Result**
+`get_model()`/`get_collection()`이 이제 같은 파일 안에서 같은 패턴,
+같은 안전장치를 갖는다. 별도 부하 테스트 없이 정적으로 검증했다 —
+두 함수의 락 구조가 라인 단위로 동일해졌다는 것 자체가 검증이다
+(하나가 이미 실측 사고로 검증된 패턴이므로).
+
+> 13번 항목에서 "except Exception: return False가 실패를 관찰 불가능하게
+> 만든다"는 교훈과, 그보다 앞서 여러 번 반복된 "**한 곳에서 고친 패턴이
+> 다른 함수에는 자동으로 안 옮겨간다**"는 교훈(4·7·11번 항목)이 같은
+> 파일 안에서 동시에 재현된 사례다. 버그를 고칠 때는 "이 파일에 같은
+> 패턴을 쓰는 다른 함수가 더 있는가"를 grep 한 번으로 확인하는 게,
+> 나중에 똑같은 사고를 다시 겪는 것보다 훨씬 싸다.

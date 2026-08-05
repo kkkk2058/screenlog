@@ -25,14 +25,22 @@ from screenlog.config import (
 from screenlog.source import TZ_MODIFIER, available_dates, load_frames, to_local
 
 _model = None
+_model_lock = threading.Lock()
 
 
 def get_model():
-    """임베딩 모델은 한 번만 불러온다. 넣을 때랑 찾을 때 둘 다 쓴다."""
+    """임베딩 모델은 한 번만 불러온다. 넣을 때랑 찾을 때 둘 다 쓴다.
+
+    get_collection()과 같은 이유로 락을 건다 — 동시 요청 두 개가 _model이
+    아직 None인 순간에 같이 들어오면 SentenceTransformer가 두 번 생성돼
+    메모리를 낭비하거나(수백MB~1GB급) 초기화 중 상태가 깨질 수 있다."""
     global _model
-    if _model is None:
-        print(f"임베딩 모델 로딩: {EMBEDDING_MODEL}")
-        _model = SentenceTransformer(EMBEDDING_MODEL)
+    if _model is not None:
+        return _model
+    with _model_lock:
+        if _model is None:
+            print(f"임베딩 모델 로딩: {EMBEDDING_MODEL}")
+            _model = SentenceTransformer(EMBEDDING_MODEL)
     return _model
 
 
