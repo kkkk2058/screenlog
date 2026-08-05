@@ -13,10 +13,12 @@
 
 import datetime
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import rumps
@@ -56,10 +58,10 @@ def ensure_accessibility_permission():
 # 동기화(색인 + EC2 전송) 대상. 팀원 배포판에서는 이 값들을 설정 파일로
 # 빼야 하지만, 지금은 개인 사용 기준으로 고정값을 쓴다.
 SCREENLOG_DIR = Path.home() / "screenlog"
-EC2_HOST = "43.203.145.162"
+EC2_HOST = "54.116.52.38"
 EC2_USER = "ubuntu"
 EC2_KEY = Path.home() / "Downloads/EXPRESS-BEC.pem"
-DASHBOARD_URL = "http://43.203.145.162:8000"
+DASHBOARD_URL = "http://54.116.52.38:8000"
 UV_BIN = Path.home() / ".local/bin/uv"
 
 
@@ -87,7 +89,48 @@ RECORDER_ARGS = [
     "--async-pii-redaction",
     "--pii-redaction-labels", "secret,email,phone,person,address",
     "--pii-backend", "local",
+    # 기본값(whisper-tiny)이 한국어를 다른 언어로 잘못 알아듣는 경우가 잦아서
+    # (실측: 러시아어/일본어/중국어로 오인식) 더 큰 모델로 바꿨다. 대신 훨씬
+    # 무겁다 — CPU/배터리 사용량과 첫 실행 시 모델 다운로드 용량이 커진다.
+    "--audio-transcription-engine", "whisper-large",
 ]
+
+
+def _kill_stale_recorder():
+    """이전 실행이 남긴 recorder가 있으면 정리한다.
+
+    이 앱은 Quit해도 자식 프로세스(recorder)를 안 죽이고 그냥 앱만 종료됐다
+    (Quit 핸들러 자체가 없었다) — 그러면 recorder가 고아 프로세스로 계속
+    돌아간다. 다음에 앱을 다시 열면 __init__이 무조건 새 recorder를 띄우는데,
+    포트가 고아 프로세스한테 이미 점유돼 있어서 새 프로세스는 시작하자마자
+    죽는다. 그 결과 실제로는 옛 recorder가 멀쩡히 녹화 중인데도 메뉴바
+    UI(is_running())는 "꺼짐"으로 잘못 표시한다 — 사용자 눈엔 "자꾸 꺼진다"로
+    보이는 원인이 이거였다. 시작 전에 같은 data-dir로 뜬 recorder를 찾아서
+    정리하면, 어떤 식으로 죽었든(강제종료/크래시 포함) 항상 깨끗하게 하나만
+    남는다.
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", f"screenpipe-bin record --data-dir {DATA_DIR}"],
+            capture_output=True, text=True,
+        )
+    except Exception:
+        return
+    pids = [int(p) for p in result.stdout.split() if p.strip()]
+    if not pids:
+        return
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    time.sleep(1)   # 포트가 반납될 시간을 준다
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
 
 RECORDER_ENV = {
     **os.environ,
@@ -146,7 +189,11 @@ def redaction_progress() -> str:
 
 class ScreenlogMenuBar(rumps.App):
     def __init__(self):
-        super().__init__("Screenlog", icon=None, title="◌")
+        # quit_button=None으로 rumps 기본 Quit 항목을 끄고, 우리 정리 로직을
+        # 거치는 Quit 항목을 직접 넣는다(아래 menu 리스트) — 기본 Quit은
+        # recorder 자식 프로세스를 안 죽이고 앱만 종료해서 고아 프로세스가
+        # 남았다.
+        super().__init__("Screenlog", icon=None, title="◌", quit_button=None)
         self.process = None
         self.syncing = False
 
@@ -157,6 +204,7 @@ class ScreenlogMenuBar(rumps.App):
         self.sync_item = rumps.MenuItem("지금 동기화 (색인 + 서버 전송)", callback=self.sync_now)
         self.dashboard_item = rumps.MenuItem("웹 대시보드 열기", callback=self.open_dashboard)
         self.log_item = rumps.MenuItem("동기화 로그 보기", callback=self.open_log)
+        self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
 
         self.menu = [
             self.status_item,
@@ -169,14 +217,21 @@ class ScreenlogMenuBar(rumps.App):
             self.sync_item,
             self.log_item,
             self.dashboard_item,
+            None,
+            self.quit_item,
         ]
 
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         ensure_accessibility_permission()
+        _kill_stale_recorder()
         self.start_recording()
 
         self.timer = rumps.Timer(self.refresh, 5)
         self.timer.start()
+
+    def quit_app(self, _):
+        self.stop_recording()
+        rumps.quit_application()
 
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None
@@ -297,6 +352,28 @@ class ScreenlogMenuBar(rumps.App):
             if result.returncode != 0:
                 log(f"서버 전송 실패(returncode={result.returncode}): {result.stderr[-1000:]}")
                 rumps.notification("Screenlog", "서버 전송 실패", result.stderr[-200:] or "알 수 없는 오류")
+                return
+
+            # rsync는 파일만 바꿔치기한다. EC2에서 계속 떠 있는 서버 프로세스는
+            # chroma 클라이언트를 프로세스 시작 시점에 한 번 열어서 메모리에
+            # 캐싱해두므로(get_collection()), 파일이 바뀐 걸 스스로 알아채지
+            # 못한다 — 재시작 안 하면 옛 인덱스로 계속 답하다가 "Error finding
+            # id"류 에러를 낸다(실측). 그래서 전송 뒤에 컨테이너를 재시작해서
+            # 캐시를 새로 로드하게 한다.
+            self.sync_item.title = "동기화 중... (서버 재시작)"
+            restart_cmd = [
+                "ssh", "-i", str(EC2_KEY), f"{EC2_USER}@{EC2_HOST}",
+                "cd ~/screenlog && docker compose restart",
+            ]
+            log(f"서버 재시작: {' '.join(restart_cmd)}")
+            result = subprocess.run(
+                restart_cmd, env=SYNC_ENV, capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            )
+            if result.returncode != 0:
+                log(f"서버 재시작 실패(returncode={result.returncode}): {result.stderr[-1000:]}")
+                rumps.notification("Screenlog", "서버 재시작 실패",
+                                    "데이터는 전송됐지만 서버가 옛 캐시로 답할 수 있음")
                 return
 
             log("동기화 완료")
