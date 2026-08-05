@@ -19,7 +19,7 @@ import secrets
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -190,7 +190,14 @@ async def api_digest(n: int = 5):
 @app.post("/api/ask")
 async def api_ask(req: AskRequest):
     """질문 -> ask_auto()를 그대로 호출하고 결과를 JSON으로 돌려준다."""
-    answer, plan, hits = await ask_auto(req.question)
+    # ask_auto()가 내부적으로 부르는 route()는 LLM API 호출 실패(타임아웃/레이트리밋 등)를
+    # 잡지 않고 그대로 던진다 — /api/ask/stream은 SSE 제너레이터의 try/except로
+    # 이미 방어돼 있는데 여기는 빠져 있었다. 그대로 두면 스택트레이스가 섞인 500이
+    # 나가므로, 같은 형태의 에러 메시지로 정리해서 돌려준다.
+    try:
+        answer, plan, hits = await ask_auto(req.question)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     # 여러 날짜 경로(정리/비교/집계)는 이벤트 단위 근거가 없어서 hits가 None이다.
     hits_out = []
@@ -217,13 +224,20 @@ async def api_ask(req: AskRequest):
 
 @app.post("/api/ask/stream")
 async def api_ask_stream(req: AskRequest):
-    # conversation_id가 없으면 이 질문이 새 대화의 시작이다 — 여기서 만들어서
-    # 첫 이벤트로 클라이언트에 알려준다(사이드바에 표시될 id가 이거다).
-    conv_id = req.conversation_id or chat_history.create_conversation(req.question)
-    # 이번 질문을 저장하기 전에 먼저 히스토리를 읽는다 — 순서를 바꾸면
-    # 방금 들어온 질문 자신이 "이전 대화"로 잡혀서 중복된다.
-    history = chat_history.get_recent_turns(conv_id, limit=HISTORY_TURNS)
-    chat_history.add_message(conv_id, "user", req.question)
+    # 이 블록은 아직 스트림을 시작하기 전(바이트를 하나도 안 보낸 시점)이라
+    # 실패하면 SSE 이벤트가 아니라 /api/ask와 같은 방식의 HTTPException으로
+    # 바로 돌려줘도 안전하다 — event_generator() 안의 try와는 별개로,
+    # DB 파일 잠금/디스크 오류 같은 chat_history 실패까지 여기서 막는다.
+    try:
+        # conversation_id가 없으면 이 질문이 새 대화의 시작이다 — 여기서 만들어서
+        # 첫 이벤트로 클라이언트에 알려준다(사이드바에 표시될 id가 이거다).
+        conv_id = req.conversation_id or chat_history.create_conversation(req.question)
+        # 이번 질문을 저장하기 전에 먼저 히스토리를 읽는다 — 순서를 바꾸면
+        # 방금 들어온 질문 자신이 "이전 대화"로 잡혀서 중복된다.
+        history = chat_history.get_recent_turns(conv_id, limit=HISTORY_TURNS)
+        chat_history.add_message(conv_id, "user", req.question)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     async def event_generator():
         yield f"data: {json.dumps({'type': 'conversation', 'id': conv_id}, ensure_ascii=False)}\n\n"
