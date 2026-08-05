@@ -3,8 +3,8 @@
 
 graph.py의 고정 분기는 그대로 둔다. 이 파일은 새 경로 하나를 추가할 뿐이다:
     route()가 뽑아준 plan["compound"]를 보고, 복합이면 여기 정의된 도구
-    4개(검색/집계/정리/비교) 중 필요한 걸 LLM이 스스로 골라 여러 번 부르게
-    한다.
+    (검색/집계/정리/비교/인수인계 등) 중 필요한 걸 LLM이 스스로 골라 여러
+    번 부르게 한다.
 
 복합 판별은 처음엔 route()와 별개인 전용 LLM 호출(is_compound())이었다.
 근데 그러면 질문 하나마다 route() 1번 + 판별 1번, 최소 LLM 호출이 2번씩
@@ -28,13 +28,13 @@ route() 4갈래로 못 답하는 질문만 이 무거운 경로로 폴백한다.
 from datetime import datetime
 from typing import Optional, TypedDict
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
-from langgraph.graph import END, StateGraph
-from langgraph.prebuilt import create_react_agent
+from langgraph.graph import END, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode
 
 from screenlog.ask import ask as _ask
 from screenlog.config import API_KEY, BASE_URL, CHAT_MODEL, RETRIEVE_K
@@ -43,9 +43,10 @@ from screenlog.source import LOCAL_TZ, weekday_ko
 from screenlog.summarize import compare_range as _compare_range
 from screenlog.summarize import count_range as _count_range
 from screenlog.summarize import format_count as _format_count
+from screenlog.summarize import handover_range as _handover_range
 from screenlog.summarize import summarize_range as _summarize_range
 
-# --- 도구 4개: 기존 함수를 감싸기만 한다 ----------------------------------
+# --- 도구들: 기존 함수를 감싸기만 한다 ------------------------------------
 # 날짜는 도구 경계에서 "YYYY-MM-DD 문자열 쌍"으로 받는다 — LLM이 채우기
 # 쉬운 형태를 도구 인터페이스로 쓰고, 내부에서 _expand_period()로
 # route()와 똑같이 날짜 리스트로 편다(뒤집힘 보정/최대 기간도 그대로 적용됨).
@@ -110,7 +111,20 @@ async def compare_days(
     return await _compare_range(question, dates, app=app, site=site)
 
 
-_TOOLS = [search_events, count_events, summarize_days, compare_days]
+@tool(description="기간 안의 활동을 \"인수인계/작업기록\" 문서 형식(진행한 작업 / "
+                  "진행 중·이어서 할 것 / 참고할 점)으로 정리한다. \"인수인계\", "
+                  "\"작업기록\", \"핸드오프\" 같은 요청, 또는 \"내가 뭐까지 했는지 "
+                  "다음에 이어받을 수 있게 정리해줘\"류 요청에 쓴다. 그냥 \"정리해줘\"는 "
+                  "summarize_days를 써라 — 이건 인수인계 양식이 명시적으로 필요할 때만."
+                  "(YYYY-MM-DD, 둘 다 포함)" + _TOOL_DOC_SUFFIX)
+async def draft_handover_doc(
+    question: str, start_date: str, end_date: str, app: Optional[str] = None, site: Optional[str] = None,
+) -> str:
+    dates = _expand_period(start_date, end_date)
+    return await _handover_range(question, dates, app=app, site=site)
+
+
+_TOOLS = [search_events, count_events, summarize_days, compare_days, draft_handover_doc]
 
 # 무제한 자유 루프가 아니라 가드레일을 둔다:
 #   - 호출 가능 도구는 위 4개로 고정(화이트리스트) — 새 능력을 여기서 만들지 않는다.
@@ -133,42 +147,151 @@ _AGENT_SYSTEM_PROMPT = """사용자의 화면 사용 기록에 대한 복합 질
   전에 질문에서 다시 확인한다."""
 
 
-def _agent_prompt(state):
+def _plan_hint(plan):
+    """route()가 이미 뽑아둔 app/site/기간을 에이전트한테 힌트로 준다.
+
+    이게 없으면 에이전트가 도구 인자(app, start_date 등)를 처음부터 다시
+    추론한다 — route()가 이미 한 일을 중복으로 또 하는 셈이다. 힌트로
+    주면 같은 필터를 일관되게 쓰게 돼서 정확도도 올라간다. "참고"라고
+    명시해서 강제는 아니게 뒀다 — route()의 intent/compound는 4갈래
+    분류일 뿐이라 app/site를 잘못 좁혔을 수도 있어서, 에이전트가 필요하면
+    무시하고 다시 확인할 여지를 남긴다."""
+    if not plan:
+        return ""
+    parts = []
+    if plan.get("app"):
+        parts.append(f"app={plan['app']}")
+    if plan.get("site"):
+        parts.append(f"site={plan['site']}")
+    if plan.get("periods"):
+        labels = ", ".join(f"{p['label']}({p['dates'][0]}~{p['dates'][-1]})" for p in plan["periods"])
+        parts.append(f"기간={labels}")
+    if not parts:
+        return ""
+    return "참고: 질문에서 이미 뽑아낸 정보 — " + ", ".join(parts) + ". 확실하면 도구 인자에 그대로 써라(다시 추론할 필요 없음).\n"
+
+
+def _agent_prompt(messages):
     # 문자열 대신 콜러블을 쓰는 이유: route()의 ROUTE_PROMPT처럼 "오늘" 날짜를
     # 매 호출 시점 기준으로 새로 계산해서 넣어야 한다 — 모듈 로드 시점에 한 번
     # 굳혀버리면 프로세스가 오래 떠 있을 때(서버 등) 날짜가 밀린다.
     today_str = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
     system_text = _AGENT_SYSTEM_PROMPT.format(today=today_str, weekday=weekday_ko(today_str))
-    return [SystemMessage(content=system_text), *state["messages"]]
+    return [SystemMessage(content=system_text), *messages]
 
 
 _react_llm = ChatOpenAI(model=CHAT_MODEL, api_key=API_KEY, base_url=BASE_URL, temperature=0)
-_react_agent = create_react_agent(_react_llm, tools=_TOOLS, prompt=_agent_prompt)
+_react_llm_with_tools = _react_llm.bind_tools(_TOOLS)
+_tool_node = ToolNode(_TOOLS)
 
 
-async def run_agent(question: str, history=None) -> str:
+class ReactState(MessagesState):
+    pass
+
+
+async def _agent_call_node(state: ReactState) -> dict:
+    response = await _react_llm_with_tools.ainvoke(_agent_prompt(state["messages"]))
+    if response.tool_calls:
+        # 진행 상황 표시용 — screenpipe 앱의 "Reviewed your activity"처럼,
+        # 도구 호출마다 뭘 하는 중인지 이벤트로 흘려보낸다. 실제 실행은
+        # 다음 노드(_tools_call_node)에서 하고, 여기선 "이제 이걸 부를거다"만
+        # 알린다 — LLM이 결정한 시점과 실제 도구 실행 시점을 UI에서
+        # 구분해서 보여줄 수 있게.
+        get_stream_writer()({"type": "tool_start", "tools": [c["name"] for c in response.tool_calls]})
+    return {"messages": [response]}
+
+
+def _after_agent(state: ReactState) -> str:
+    last = state["messages"][-1]
+    return "tools" if getattr(last, "tool_calls", None) else "end"
+
+
+def _after_tools(state: ReactState) -> str:
+    # "도구 1개짜리 첫 라운드였나?"만 확인한다. 그렇다면 이미 완결된 답을
+    # 들고 있는 셈이라(도구들은 전부 이미 완성된 문장을 돌려준다), 굳이
+    # LLM을 한 번 더 불러 "정리"라는 이름으로 살짝 다르게 재진술시키지
+    # 않는다 — 그 재진술 자체가 LLM 호출 1회를 그냥 버리는 것이었다.
+    # 도구가 2개 이상 걸렸거나 이미 한 바퀴 돈 뒤라면, 결과를 종합하거나
+    # 추가 판단이 실제로 필요하니 정상적으로 agent로 되돌아간다.
+    ai_calls = [m for m in state["messages"] if isinstance(m, AIMessage) and m.tool_calls]
+    if len(ai_calls) == 1 and len(ai_calls[0].tool_calls) == 1:
+        return "shortcut"
+    return "agent"
+
+
+def _shortcut_finalize_node(state: ReactState) -> dict:
+    last_tool_msg = state["messages"][-1]
+    return {"messages": [AIMessage(content=last_tool_msg.content)]}
+
+
+async def _tools_call_node(state: ReactState) -> dict:
+    # 실제 도구 실행(ToolNode)을 그대로 위임하고, 끝났을 때 이벤트만 하나
+    # 더 낸다 — tool_start는 _agent_call_node가 "부르기로 결정했다" 시점에
+    # 이미 냈으니, 여기선 "실행이 끝났다"만 알리면 된다.
+    last = state["messages"][-1]
+    names = [c["name"] for c in last.tool_calls]
+    result = await _tool_node.ainvoke(state)
+    get_stream_writer()({"type": "tool_done", "tools": names})
+    return result
+
+
+def _build_react_graph():
+    g = StateGraph(ReactState)
+    g.add_node("agent", _agent_call_node)
+    g.add_node("tools", _tools_call_node)
+    g.add_node("shortcut", _shortcut_finalize_node)
+    g.set_entry_point("agent")
+    g.add_conditional_edges("agent", _after_agent, {"tools": "tools", "end": END})
+    g.add_conditional_edges("tools", _after_tools, {"shortcut": "shortcut", "agent": "agent"})
+    g.add_edge("shortcut", END)
+    return g.compile()
+
+
+_react_agent = _build_react_graph()
+
+
+async def run_agent(question: str, history=None, plan=None) -> str:
     # history는 도구 파라미터로 안 넘긴다 — "그날"/"더 자세히" 같은 지시어를
     # 도구 호출 전에 LLM이 스스로 구체적인 날짜/질문으로 풀어내라고, 대화
     # 맥락을 유저 메시지 안에 route()의 _format_history()와 같은 형식으로
     # 얹어준다. 도구(search_events 등)는 이미 구체화된 인자만 받으면 된다 —
     # 원본 함수들의 history= 파라미터(지시어 해석용)까지 여기서 중복으로
     # 다시 흘려보낼 필요가 없다.
+    hint_text = _plan_hint(plan)
     history_text = _format_history(history)
-    user_content = f"{history_text}\n질문: {question}" if history_text else question
+    prefix = f"{hint_text}{history_text}"
+    user_content = f"{prefix}\n질문: {question}" if prefix else question
 
     # recursion_limit은 "LLM 호출/도구 실행" 각각을 1스텝으로 세므로, 8이면
     # 도구 호출 3~4번 정도까지 이어붙일 수 있다. 그 안에 못 끝내면
-    # GraphRecursionError가 나는데, 4개짜리 도구 목록으로 답을 못 냈다면
+    # GraphRecursionError가 나는데, 지금 있는 도구 목록으로 답을 못 냈다면
     # 더 돌려봐야 나아질 가능성이 낮아서(질문이 도구로 못 푸는 형태거나
     # LLM이 같은 도구를 계속 잘못 부르는 경우) 재시도 대신 안내 문구로 끝낸다.
+    #
+    # ainvoke() 대신 astream(stream_mode=["custom", "values"])을 쓰는 이유:
+    # 내부 그래프(_agent_call_node/_tools_call_node)가 get_stream_writer()로
+    # 낸 tool_start/tool_done 이벤트는, 내부 그래프를 ainvoke()로만 부르면
+    # 아무 데도 안 잡히고 사라진다(스트리밍 컨텍스트가 없으면 no-op).
+    # 여기(run_agent)는 바깥 그래프(_agent_node)가 이미 astream()으로 돌고
+    # 있는 도중에 호출되므로, 안쪽 이벤트를 여기서 직접 받아 바깥
+    # writer로 그대로 릴레이해야 진행 상황이 실제로 밖에 전달된다.
+    # "values" 모드는 매 스텝 전체 state를 주므로, 마지막 값에서 최종
+    # 답변(messages[-1])을 꺼낸다 — custom 모드만 쓰면 최종 답을 못 얻는다.
+    writer = get_stream_writer()
+    final_messages = None
     try:
-        result = await _react_agent.ainvoke(
+        async for mode, chunk in _react_agent.astream(
             {"messages": [{"role": "user", "content": user_content}]},
             config={"recursion_limit": 8},
-        )
+            stream_mode=["custom", "values"],
+        ):
+            if mode == "custom":
+                writer(chunk)
+            else:
+                final_messages = chunk["messages"]
     except GraphRecursionError:
         return "질문이 복잡해서 도구 호출 한도 안에 답을 못 만들었습니다. 더 구체적으로 나눠서 물어봐 주세요."
-    return result["messages"][-1].content
+    return final_messages[-1].content
 
 
 # --- 기존 graph.py에 붙이는 얇은 레이어 -----------------------------------
@@ -191,7 +314,7 @@ async def _classify_node(state: AgentState) -> dict:
 
 
 async def _agent_node(state: AgentState) -> dict:
-    answer = await run_agent(state["question"], history=state.get("history"))
+    answer = await run_agent(state["question"], history=state.get("history"), plan=state.get("plan"))
     writer = get_stream_writer()
     writer({"type": "plan", "plan": {"intent": "복합"}})
     writer({"type": "hits", "hits": []})
@@ -243,9 +366,12 @@ async def ask_auto(question, k=RETRIEVE_K, history=None):
 
 
 async def stream_ask_auto(question, k=RETRIEVE_K, history=None):
-    """screenlog.ask.stream_ask_auto()와 같은 이벤트(plan/hits/token/done)를 낸다.
-    에이전트 경로는 도구 호출 중간 과정을 스트리밍하지 않는다 — 완성된 답을
-    한 번에 token 이벤트로 보낸다(3번째 답에서 설명한 스트리밍 트레이드오프)."""
+    """screenlog.ask.stream_ask_auto()와 같은 이벤트(plan/hits/token/done)에
+    더해, 에이전트 경로에선 tool_start/tool_done도 낸다. 최종 답 자체는
+    토큰 단위로 못 쪼갠다(도구가 이미 완성된 문장을 돌려주므로) — 대신
+    "지금 어떤 도구가 실행 중인지"를 실시간으로 흘려보내서, 답이 나오기
+    전까지 화면이 먹통처럼 안 보이게 한다(screenpipe 앱의 진행 상황
+    표시와 같은 목적)."""
     async for chunk in _graph.astream({"question": question, "k": k, "history": history},
                                        stream_mode="custom"):
         yield chunk
