@@ -48,11 +48,17 @@ INDEX_CHECKPOINT_SIZE = 200
 # 근거를 몇 개나 프롬프트에 넣을지. 5였을 때 답에 필요한 이벤트가 top-5
 # 밖으로 밀려서 LLM이 놓치는 사례가 있었다. CONTEXT_CHARS_PER_HIT(1500자)
 # 기준으로 10이면 근거만으로 최대 15,000자라 아직 감당할 수준이라 10으로 올렸다.
-RETRIEVE_K = 10
+#
+# 이후 골든셋(eval/retrieval_questions.jsonl, 25문항)으로 recall@k를 실측해서
+# 8로 낮췄다 — k=8에서 이미 recall 0.99(24/25 만점)이고, 9·10으로 늘려도
+# 0.99→1.00으로 딱 1문항(1%p)만 더 잡힌다. 반면 8로 낮추면 프롬프트에 들어가는
+# 근거가 20% 줄어든다(10개 -> 8개). recall 손실이 거의 없는데 프롬프트만
+# 커지는 구간(9~10)을 걷어낸 것— eval/eval_retrieval.py 실행 결과 참고.
+RETRIEVE_K = 8
 
 # 검색인데 기간(periods)이 있는 질문("14일치 디스코드 공지 찾아줘")의 상한.
-# RETRIEVE_K(10)를 그대로 쓰면 기간이 길어질수록 진짜 관련 있는 이벤트가
-# top-10 밖으로 밀려서 통째로 누락된다. 그렇다고 상한을 없애면 "며칠치
+# RETRIEVE_K(8)를 그대로 쓰면 기간이 길어질수록 진짜 관련 있는 이벤트가
+# top-8 밖으로 밀려서 통째로 누락된다. 그렇다고 상한을 없애면 "며칠치
 # 공지가 많이 쌓인 경우" 프롬프트가 무한정 커진다 — 그래서 기간 있는
 # 검색만 더 넉넉한 별도 상한을 둔다. CONTEXT_CHARS_PER_HIT(1500자) 기준
 
@@ -109,7 +115,14 @@ IDLE_GAP_SEC = 120
 # 인터페이스(structured output 포함)로 짜여 있어서다.
 
 
-if os.environ.get("OPENAI_API_KEY"):
+# USE_LOCAL_LLM은 다른 키를 지우지 않고 그 위에 우선순위로 얹는 스위치다 —
+# 환경변수 하나만 끄면(줄만 지우면) 바로 기존 게이트웨이/Anthropic 경로로
+# 돌아갈 수 있어야 로컬 LLM이 말썽일 때 롤백이 코드 변경 없이 된다.
+if os.environ.get("USE_LOCAL_LLM"):
+    CHAT_MODEL = os.environ.get("LOCAL_LLM_MODEL", "qwen2.5:7b-instruct")
+    BASE_URL = os.environ.get("LOCAL_LLM_URL", "http://localhost:11434/v1")
+    API_KEY = os.environ.get("LOCAL_LLM_API_KEY", "ollama")  # Ollama는 인증이 없어 더미값만 채운다
+elif os.environ.get("OPENAI_API_KEY"):
     CHAT_MODEL = "gemini-3.1-flash-lite"
     BASE_URL = "https://factchat-cloud.mindlogic.ai/v1/gateway"
     API_KEY = os.environ["OPENAI_API_KEY"]
