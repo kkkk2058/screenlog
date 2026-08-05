@@ -1976,6 +1976,11 @@ langchain = [
 langgraph = [
     { name = "langgraph" },
 ]
+langgraph-agent = [
+    { name = "langchain-core" },
+    { name = "langchain-openai" },
+    { name = "langgraph" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1987,14 +1992,17 @@ requires-dist = [
     { name = "chromadb", specifier = ">=1.5.9" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=0.3" },
+    { name = "langchain-core", marker = "extra == 'langgraph-agent'", specifier = ">=0.3" },
     { name = "langchain-openai", marker = "extra == 'langchain'", specifier = ">=0.3" },
+    { name = "langchain-openai", marker = "extra == 'langgraph-agent'", specifier = ">=0.3" },
     { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=0.2" },
+    { name = "langgraph", marker = "extra == 'langgraph-agent'", specifier = ">=0.2" },
     { name = "openai", specifier = ">=2.46.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "sentence-transformers", specifier = ">=5.6.0" },
     { name = "uvicorn", specifier = ">=0.32.0" },
 ]
-provides-extras = ["langchain", "langgraph"]
+provides-extras = ["langchain", "langgraph", "langgraph-agent"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0" }]
