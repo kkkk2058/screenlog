@@ -11,6 +11,7 @@ CONV_HISTORY는 원래 브라우저 메모리에만 있어서 새로고침하면
 
 import sqlite3
 import uuid
+from contextlib import closing
 from datetime import datetime
 
 from screenlog.config import CHAT_HISTORY_DB
@@ -36,6 +37,12 @@ TITLE_MAX = 28
 
 
 def _connect():
+    # 호출부는 반드시 contextlib.closing()으로 감싸서 써야 한다.
+    # sqlite3.Connection의 `with conn:` 은 커밋/롤백만 하지 커넥션을 안 닫는다
+    # — 이걸 몰라서 매 호출마다 fd(파일 디스크립터)가 하나씩 새고 있었다
+    # (실측: 50회 호출 -> 열린 fd 101개, 트러블슈팅 문서 22번 참고).
+    # 오래 떠 있는 uvicorn 프로세스에선 결국 OS fd 한도에 걸려 서버 전체가
+    # 죽는 문제라 방치할 수 없었다.
     CHAT_HISTORY_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(CHAT_HISTORY_DB)
     conn.executescript(_SCHEMA)
@@ -55,11 +62,12 @@ def create_conversation(first_question):
     """새 대화를 만들고 id를 돌려준다. 제목은 첫 질문에서 그대로 뽑는다."""
     conv_id = uuid.uuid4().hex[:12]
     now = _now()
-    with _connect() as conn:
-        conn.execute(
-            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (conv_id, _make_title(first_question), now, now),
-        )
+    with closing(_connect()) as conn:
+        with conn:
+            conn.execute(
+                "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (conv_id, _make_title(first_question), now, now),
+            )
     return conv_id
 
 
@@ -67,17 +75,18 @@ def add_message(conversation_id, role, content):
     """메시지 하나를 저장하고, 그 대화의 updated_at을 지금으로 올린다
     (사이드바 목록이 최근 대화 순으로 뜨게 하는 용도)."""
     now = _now()
-    with _connect() as conn:
-        conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-            (conversation_id, role, content, now),
-        )
-        conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
+    with closing(_connect()) as conn:
+        with conn:
+            conn.execute(
+                "INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                (conversation_id, role, content, now),
+            )
+            conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
 
 
 def list_conversations(limit=50):
     """사이드바에 뿌릴 대화 목록. 최근 순."""
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         rows = conn.execute(
             "SELECT id, title, updated_at FROM conversations ORDER BY updated_at DESC LIMIT ?",
             (limit,),
@@ -89,7 +98,7 @@ def get_messages(conversation_id):
     """그 대화의 메시지 전체. role/content만 — plan/hits는 애초에 저장 대상이
     아니다(다시 열어봤을 때 "근거"까지 재현하려면 그것도 저장해야 하는데,
     지금은 질문-답변 텍스트만 있으면 팔로우업 맥락은 충분하다)."""
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         rows = conn.execute(
             "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id",
             (conversation_id,),
