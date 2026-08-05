@@ -316,7 +316,12 @@ async def _classify_node(state: AgentState) -> dict:
 async def _agent_node(state: AgentState) -> dict:
     answer = await run_agent(state["question"], history=state.get("history"), plan=state.get("plan"))
     writer = get_stream_writer()
-    writer({"type": "plan", "plan": {"intent": "복합"}})
+    # classify 노드가 이미 뽑아둔 진짜 plan을 그대로 내보낸다. 예전엔
+    # {"intent": "복합"}이라는 자리표시자만 보냈는데, 프론트(renderPlan())가
+    # plan.periods를 항상 있다고 가정하고 읽어서 실제로 던지면(TypeError:
+    # Cannot read properties of undefined (reading 'reduce')) 터졌다 — 지금까지
+    # api.py가 이 경로를 아예 안 썼어서 안 드러났을 뿐이었다.
+    writer({"type": "plan", "plan": state.get("plan") or {}})
     writer({"type": "hits", "hits": []})
     writer({"type": "token", "text": answer})
     writer({"type": "done"})
