@@ -77,6 +77,34 @@ PERIOD_COMPARE_PROMPT = """아래는 서로 다른 기간의 활동을 기간별
 - 이전 대화가 있으면 참고해서 팔로우업 질문("더 자세히", "그거 무슨 뜻이야")에 답한다.
 """
 
+HANDOVER_PROMPT = """아래는 사용자의 활동을 날짜별로 미리 요약해둔 것이다.
+{history}
+{context}
+
+질문: {question}
+
+위 요약들을 인수인계 문서 형식으로 다시 정리해라. 이 문서를 받는 사람이
+그동안의 진행 상황을 처음부터 파악할 필요 없이 바로 이어서 작업할 수 있게
+쓰는 게 목적이다. 아래 세 항목으로 나눠서 쓴다:
+
+## 진행한 작업
+- 날짜/시각과 함께 구체적으로 무엇을 했는지
+
+## 진행 중 / 다음에 이어서 할 것
+- 시작했지만 끝나지 않은 것으로 보이는 작업. 없으면 이 항목은 생략한다.
+
+## 참고할 점
+- 이슈, 막힌 것, 결정이 필요해 보이는 것. 기록에 명확한 근거가 없으면
+  이 항목 자체를 생략한다(억지로 채우지 않는다).
+
+규칙:
+- 요약에 실제로 적힌 내용만으로 판단한다. 근거 없이 "완료됨"/"막힘"이라고
+  단정하지 않는다 — 확실하지 않으면 "~한 것으로 보임"처럼 표현을 흐리거나,
+  아예 언급하지 않는다.
+- 날짜를 밝히며 답한다.
+- 이전 대화가 있으면 참고해서 팔로우업 질문에 답한다.
+"""
+
 SUMMARY_EXCERPT = 300   # 하루 요약 프롬프트엔 이벤트를 다 넣으니, 하나당 길이를 줄인다.
 
 
@@ -242,6 +270,19 @@ async def compare_range(question, dates, app=None, hour_start=None, hour_end=Non
     combined = "\n\n".join(days)
     return await _call_llm(COMPARE_PROMPT.format(context=combined, question=question,
                                                    history=_format_history(history)))
+
+
+async def handover_range(question, dates, app=None, hour_start=None, hour_end=None, site=None, history=None):
+    """인수인계/작업기록형 — compare_range()와 같은 2단계 구조(날짜별 요약 ->
+    종합 LLM 호출 1회)를 쓰되, 목적이 "비교/판단"이 아니라 "이어서 작업하기
+    좋은 형태로 재구성"이라 프롬프트만 다르다. 날짜별 요약은 summarize_day()를
+    그대로 재사용하므로 summary_cache 적중 혜택도 그대로 받는다."""
+    days = await asyncio.gather(*[
+        summarize_day(date, app, hour_start, hour_end, site) for date in dates
+    ])
+    combined = "\n\n".join(days)
+    return await _call_llm(HANDOVER_PROMPT.format(context=combined, question=question,
+                                                    history=_format_history(history)))
 
 
 async def summarize_period(period, app=None, hour_start=None, hour_end=None, site=None, history=None, question=None):
