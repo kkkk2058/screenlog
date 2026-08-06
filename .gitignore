@@ -11,11 +11,16 @@ __pycache__/
 chroma/
 chroma_*/
 
-# 실험 산출물
-eval/runs/
+# 실험 산출물 — eval/routing/runs/의 기존 5개(vanilla·meta_filter·routed·auto)는
+# 재현 불가능한 단계별 비교의 유일한 기록이라 예외로 커밋돼 있다(REPORT.md 참고).
+eval/*/runs/
 
 # macOS
 .DS_Store
+
+# 로컬 서버 실행 산출물
+uvicorn.log
+uvicorn.pid
 
 # 로컬 도구 설정
 .claude/
