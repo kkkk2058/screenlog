@@ -139,8 +139,14 @@ else:
 # 턴부터 400으로 막힌다 — 우리 쪽에서 재전송할 값 자체가 없으니 코드로 못 고친다.
 # route()/graph.py처럼 한 턴짜리 구조화 출력은 문제 없어서 CHAT_MODEL을 그대로 두고,
 # 도구를 여러 턴 이어 부르는 agent.py만 OpenAI 계열(포맷 변환이 없어 이 문제가 원천적으로
-# 없음)의 가장 싼 모델로 분리했다.
-AGENT_CHAT_MODEL = "gpt-5.4-nano" if os.environ.get("OPENAI_API_KEY") else CHAT_MODEL
+# 없음)의 가장 싼 모델로 분리했다. 로컬 LLM 경로는 이 게이트웨이를 아예 안 거치니
+# 이 문제 자체가 없어서 CHAT_MODEL을 그대로 쓴다.
+if os.environ.get("USE_LOCAL_LLM"):
+    AGENT_CHAT_MODEL = CHAT_MODEL
+elif os.environ.get("OPENAI_API_KEY"):
+    AGENT_CHAT_MODEL = "gpt-5.4-nano"
+else:
+    AGENT_CHAT_MODEL = CHAT_MODEL
 
 # --- 슬랙 연동 -----------------------------------------------------------
 # draft_slack_message(agent.py 도구)는 LLM이 자유롭게 부를 수 있지만, 실제
