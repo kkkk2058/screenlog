@@ -106,6 +106,14 @@
      아예 아무것도 안 보여줘야(=:empty) 매 턴마다 이 줄이 안 생긴다. */
   .plan-badges:empty{ display:none; }
   .plan-caption{ font-size:12.5px; color:var(--muted); }
+
+  /* draft_slack_message가 이번 턴에 호출됐을 때만 채워지는 자리(msg-actions는
+     매 턴 항상 만들어지지만 비어있으면 안 보인다) — 채널 입력 + 보내기 버튼. */
+  .msg-actions:empty{ display:none; }
+  .msg-actions{ display:flex; align-items:center; gap:8px; }
+  .slack-channel-input{ flex:0 1 220px; padding:7px 10px; font-size:13px; border-radius:7px;
+                         border:1px solid var(--border); background:var(--surface); color:var(--ink); }
+  .msg-actions .hint{ font-size:12.5px; color:var(--muted); }
   .answer{ font-size:14.5px; line-height:1.65; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
   .answer p{ margin:0 0 12px; }
   .answer p:last-child{ margin-bottom:0; }
@@ -308,12 +316,13 @@ function createTurn(question){
   const badges = el("div","plan-badges");
   const answer = el("div","answer");
   const hits = el("div","hits");
-  bot.append(badges, answer, hits);
+  const actions = el("div","msg-actions");
+  bot.append(badges, answer, hits, actions);
   turn.append(bot);
 
   chatlog.append(turn);
   chatlog.scrollTop = chatlog.scrollHeight;   // 새 턴은 로그 안쪽 스크롤 바닥으로
-  return {badges, answer, hits};
+  return {badges, answer, hits, actions};
 }
 
 qform.addEventListener("submit", async e=>{
@@ -346,6 +355,8 @@ async function askStream(question, els){
   if(!res.ok) throw new Error("서버 오류 "+res.status);
 
   showSkeleton(els);
+
+  let usedSlackDraft = false;   // 이 턴에서 draft_slack_message가 호출됐는지 — 끝나고 "보내기" 버튼 노출 여부
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -415,6 +426,7 @@ async function askStream(question, els){
           // 확인 중인지 보여준다. token이 오면 renderAnswer()가 이 자리를
           // 자연스럽게 덮어써서 따로 지우는 코드가 필요 없다.
           renderToolStatus(els, payload.tools, true);
+          if(payload.tools.includes("draft_slack_message")) usedSlackDraft = true;
         }else if(payload.type === "tool_done"){
           renderToolStatus(els, payload.tools, false);
         }else if(payload.type === "token"){
@@ -427,9 +439,52 @@ async function askStream(question, els){
     }
     networkDone = true;
     await typingDone;   // 타이핑 애니메이션이 pending을 다 그릴 때까지 기다렸다가 반환
+    if(usedSlackDraft) renderSlackSendAction(els, pending);
   }finally{
     clearInterval(timer);   // 에러로 중간에 빠져나가도 타이머는 반드시 정리
   }
+}
+
+// draft_slack_message가 이번 턴에 호출됐을 때만 answer 아래에 노출한다.
+// 채널을 입력받아 /api/slack/send를 직접 호출한다 — LLM은 이 버튼의 존재도,
+// 클릭 여부도 모른다. 실제 전송은 여기(사용자의 명시적 클릭)에서만 일어난다.
+function renderSlackSendAction(els, text){
+  const box = els.actions;
+  box.innerHTML = "";
+
+  const channelInput = document.createElement("input");
+  channelInput.type = "text";
+  channelInput.className = "slack-channel-input";
+  channelInput.placeholder = "채널 ID 또는 #채널명";
+
+  const sendBtn = el("button","btn btn-primary btn-sm","슬랙으로 보내기");
+  sendBtn.type = "button";
+
+  const status = el("span","hint");
+
+  sendBtn.addEventListener("click", async ()=>{
+    const channel = channelInput.value.trim();
+    if(!channel){ status.textContent = "채널을 입력하세요"; return; }
+
+    sendBtn.disabled = true; channelInput.disabled = true;
+    status.textContent = "전송 중…";
+    try{
+      const res = await fetch("/api/slack/send", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ text, channel }),
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail || ("서버 오류 "+res.status));
+      status.textContent = `#${channel}에 전송 완료`;
+      channelInput.remove(); sendBtn.remove();
+    }catch(err){
+      status.textContent = "전송 실패: "+err.message;
+      sendBtn.disabled = false; channelInput.disabled = false;
+    }
+  });
+
+  box.append(channelInput, sendBtn, status);
 }
 
 // plan(app/hour/기간)이 걸렸을 때만 한 줄 캡션으로 보여준다. "app=null
@@ -453,6 +508,7 @@ function renderPlan(els, plan){
 const TOOL_LABELS = {
   search_events: "검색", count_events: "집계", summarize_days: "정리",
   compare_days: "비교", draft_handover_doc: "인수인계 문서 작성",
+  draft_slack_message: "슬랙 메시지 초안 작성",
 };
 
 // 복합 질문(에이전트 경로)에서 도구를 부르는 동안 "지금 뭘 하고 있는지"를

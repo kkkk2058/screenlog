@@ -26,15 +26,15 @@ route() 4갈래로 못 답하는 질문만 이 무거운 경로로 폴백한다.
 """
 
 from datetime import datetime
-from typing import Optional, TypedDict
+from typing import Annotated, Optional, TypedDict
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, MessagesState, StateGraph
-from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt import InjectedState, ToolNode
 
 from screenlog.ask import ask as _ask
 from screenlog.config import AGENT_CHAT_MODEL, API_KEY, BASE_URL, RETRIEVE_K
@@ -42,6 +42,8 @@ from screenlog.router import _APP_HINT, _SITE_HINT, _expand_period, _format_hist
 from screenlog.source import LOCAL_TZ, weekday_ko
 from screenlog.summarize import compare_range as _compare_range
 from screenlog.summarize import count_range as _count_range
+from screenlog.summarize import draft_slack_from_text as _draft_slack_from_text
+from screenlog.summarize import draft_slack_range as _draft_slack_range
 from screenlog.summarize import format_count as _format_count
 from screenlog.summarize import handover_range as _handover_range
 from screenlog.summarize import summarize_range as _summarize_range
@@ -115,10 +117,36 @@ async def draft_handover_doc(
     return await _handover_range(question, dates, app=app, site=site)
 
 
-_TOOLS = [search_events, count_events, summarize_days, compare_days, draft_handover_doc]
+@tool(description="기간 안의 활동을 슬랙 채널에 바로 올릴 수 있는 짧은 공유 메시지 초안으로 "
+                  "쓴다. \"슬랙으로 공유해줘\", \"팀 채널에 알려줘\", \"슬랙 메시지 써줘\" 같은 "
+                  "요청에 쓴다. 초안만 만들 뿐 실제로 전송하지는 않는다 — 이 도구를 부른 뒤 "
+                  "사용자에게 초안을 보여주고 승인을 기다려라, 되묻지 않고 자동으로 올리지 않는다. "
+                  "인수인계 문서 형식이 필요하면 draft_handover_doc을 대신 써라.\n\n"
+                  "start_date/end_date는 둘 다 줄 때만 새로 조회한다(YYYY-MM-DD, 둘 다 포함). "
+                  "\"방금 그거 슬랙으로 보내자\"처럼 새 기간/주제 언급 없이 직전 답변을 그대로 "
+                  "공유해달라는 요청이면 start_date/end_date를 둘 다 비워둬라 — 그러면 새로 "
+                  "조회하지 않고 바로 직전 답변을 그대로 재포맷한다(내용이 달라질 위험이 없다). "
+                  "직접 다시 타이핑해서 옮기지 마라, 도구가 알아서 가져온다.")
+async def draft_slack_message(
+    question: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    app: Optional[str] = None,
+    site: Optional[str] = None,
+    history: Annotated[Optional[list], InjectedState("history")] = None,
+) -> str:
+    if start_date and end_date:
+        dates = _expand_period(start_date, end_date)
+        return await _draft_slack_range(question, dates, app=app, site=site)
+    if not history:
+        return "직전 답변이 없어서 재사용할 내용이 없습니다. 기간을 지정해서 다시 요청해주세요."
+    return await _draft_slack_from_text(question, history[-1]["answer"])
+
+
+_TOOLS = [search_events, count_events, summarize_days, compare_days, draft_handover_doc, draft_slack_message]
 
 # 무제한 자유 루프가 아니라 가드레일을 둔다:
-#   - 호출 가능 도구는 위 4개로 고정(화이트리스트) — 새 능력을 여기서 만들지 않는다.
+#   - 호출 가능 도구는 위 6개로 고정(화이트리스트) — 새 능력을 여기서 만들지 않는다.
 #   - recursion_limit으로 스텝 수 상한(도구 호출-응답 왕복 기준 대략 절반).
 _AGENT_SYSTEM_PROMPT = """사용자의 화면 사용 기록에 대한 복합 질문에 답한다. 오늘은 {today}({weekday})이다.
 "이번 주"/"저번 주"/"어제" 같은 상대 날짜는 이 오늘 날짜를 기준으로 직접
@@ -136,6 +164,9 @@ _AGENT_SYSTEM_PROMPT = """사용자의 화면 사용 기록에 대한 복합 질
   요약만 한다.
 - 날짜 말고 앱/사이트가 불확실하면(예: 후보 목록에 없는 이름) 도구를 부르기
   전에 질문에서 다시 확인한다.
+- draft_slack_message/draft_handover_doc은 초안만 만들 뿐 실제로 어디에도
+  전송/게시하지 않는다. 이 도구를 불렀다고 "보냈다"/"올렸다"고 말하지 않는다
+  — 항상 "이 초안대로 괜찮은지" 확인을 구하는 톤으로 답한다.
 
 app 후보(반드시 이 중 하나거나 비워둔다):
 {app_hint}
@@ -185,7 +216,9 @@ _tool_node = ToolNode(_TOOLS)
 
 
 class ReactState(MessagesState):
-    pass
+    # draft_slack_message가 InjectedState로 직접 읽는다 — LLM에게 도구 인자로
+    # 다시 타이핑시키지 않고, 대화 기록을 코드가 그대로 꽂아 넣기 위한 자리.
+    history: Optional[list]
 
 
 async def _agent_call_node(state: ReactState) -> dict:
@@ -205,24 +238,6 @@ def _after_agent(state: ReactState) -> str:
     return "tools" if getattr(last, "tool_calls", None) else "end"
 
 
-def _after_tools(state: ReactState) -> str:
-    # "도구 1개짜리 첫 라운드였나?"만 확인한다. 그렇다면 이미 완결된 답을
-    # 들고 있는 셈이라(도구들은 전부 이미 완성된 문장을 돌려준다), 굳이
-    # LLM을 한 번 더 불러 "정리"라는 이름으로 살짝 다르게 재진술시키지
-    # 않는다 — 그 재진술 자체가 LLM 호출 1회를 그냥 버리는 것이었다.
-    # 도구가 2개 이상 걸렸거나 이미 한 바퀴 돈 뒤라면, 결과를 종합하거나
-    # 추가 판단이 실제로 필요하니 정상적으로 agent로 되돌아간다.
-    ai_calls = [m for m in state["messages"] if isinstance(m, AIMessage) and m.tool_calls]
-    if len(ai_calls) == 1 and len(ai_calls[0].tool_calls) == 1:
-        return "shortcut"
-    return "agent"
-
-
-def _shortcut_finalize_node(state: ReactState) -> dict:
-    last_tool_msg = state["messages"][-1]
-    return {"messages": [AIMessage(content=last_tool_msg.content)]}
-
-
 async def _tools_call_node(state: ReactState) -> dict:
     # 실제 도구 실행(ToolNode)을 그대로 위임하고, 끝났을 때 이벤트만 하나
     # 더 낸다 — tool_start는 _agent_call_node가 "부르기로 결정했다" 시점에
@@ -235,14 +250,20 @@ async def _tools_call_node(state: ReactState) -> dict:
 
 
 def _build_react_graph():
+    # 도구를 몇 개 썼든 항상 agent로 돌아가서 "더 필요한가"를 다시 판단하게
+    # 한다. 예전엔 "도구 1개짜리 첫 라운드면 끝"이라는 지름길이 있었는데,
+    # 이 그래프는 compound=true(정리/검색/비교/집계 네 갈래로 안 풀리는
+    # 복합 요청)일 때만 타는 경로라 그 가정이 위험했다 — 예를 들어 "8월
+    # 3일 정리해서 슬랙으로 보내"에서 LLM이 정리 도구부터 1개만 부르면,
+    # 슬랙 초안 도구는 호출 기회도 없이 그 결과로 바로 끝나버릴 수 있었다
+    # (재현 확인은 안 했지만 구조상 가능한 경로). LLM 호출이 매번 하나씩
+    # 더 붙는 대신, 그 재확인 자체가 이 경로의 존재 이유다.
     g = StateGraph(ReactState)
     g.add_node("agent", _agent_call_node)
     g.add_node("tools", _tools_call_node)
-    g.add_node("shortcut", _shortcut_finalize_node)
     g.set_entry_point("agent")
     g.add_conditional_edges("agent", _after_agent, {"tools": "tools", "end": END})
-    g.add_conditional_edges("tools", _after_tools, {"shortcut": "shortcut", "agent": "agent"})
-    g.add_edge("shortcut", END)
+    g.add_edge("tools", "agent")
     return g.compile()
 
 
@@ -250,12 +271,16 @@ _react_agent = _build_react_graph()
 
 
 async def run_agent(question: str, history=None, plan=None) -> str:
-    # history는 도구 파라미터로 안 넘긴다 — "그날"/"더 자세히" 같은 지시어를
-    # 도구 호출 전에 LLM이 스스로 구체적인 날짜/질문으로 풀어내라고, 대화
-    # 맥락을 유저 메시지 안에 route()의 _format_history()와 같은 형식으로
-    # 얹어준다. 도구(search_events 등)는 이미 구체화된 인자만 받으면 된다 —
-    # 원본 함수들의 history= 파라미터(지시어 해석용)까지 여기서 중복으로
-    # 다시 흘려보낼 필요가 없다.
+    # history는 두 경로로 쓰인다:
+    #   1) 텍스트로 프롬프트에 얹기 — "그날"/"더 자세히" 같은 지시어를 도구
+    #      호출 전에 LLM이 스스로 구체적인 날짜/질문으로 풀어내게 한다.
+    #      대부분의 도구(search_events 등)는 이미 구체화된 인자만 받으면
+    #      되니 이걸로 충분하다.
+    #   2) ReactState에 구조 그대로 얹기 — draft_slack_message처럼 "직전
+    #      답변을 그대로 재사용"해야 하는 도구는 텍스트에서 다시 추론하게
+    #      하면 위험하다(재조회 필터를 잘못 추론하면 완전히 무관한 내용이
+    #      나온 사고가 실측됨). InjectedState로 코드가 직접 history[-1]을
+    #      꺼내 쓰게 해서, LLM이 다시 타이핑/추론할 필요 자체를 없앤다.
     hint_text = _plan_hint(plan)
     history_text = _format_history(history)
     prefix = f"{hint_text}{history_text}"
@@ -280,7 +305,7 @@ async def run_agent(question: str, history=None, plan=None) -> str:
     final_messages = None
     try:
         async for mode, chunk in _react_agent.astream(
-            {"messages": [{"role": "user", "content": user_content}]},
+            {"messages": [{"role": "user", "content": user_content}], "history": history},
             config={"recursion_limit": 8},
             stream_mode=["custom", "values"],
         ):

@@ -14,6 +14,7 @@ dependencies = [
     "python-dotenv>=1.2.2",     # API 키를 코드에 안 박기
     "fastapi>=0.115.0",         # 6단계 웹 서비스
     "uvicorn>=0.32.0",          # FastAPI를 띄우는 서버
+    "httpx>=0.27",              # 슬랙 Web API 호출 (openai의 전이 의존성이었지만 직접 써서 명시)
 ]
 
 # langchain: router/ask/summarize를 langchain_openai로 다시 짠 비교용 버전.
@@ -28,6 +29,12 @@ dependencies = [
 langchain = ["langchain-core>=0.3", "langchain-openai>=0.3"]
 langgraph = ["langgraph>=0.2"]
 langgraph-agent = ["langgraph>=0.2", "langchain-core>=0.3", "langchain-openai>=0.3"]
+# bm25: eval/ 하이브리드 검색 실험용(Phase 4). 프로덕션 검색 경로(ask.py)는
+# 아직 dense뿐이라 이 extra 없이도 그대로 돈다 — 실험이 하이브리드를 채택하면
+# 그때 core dependencies로 옮긴다. kiwipiepy는 BM25 토큰화 전에 한국어
+# 형태소(조사 분리)를 떼기 위함 — 공백 기준으로만 쪼개면 "코드트리에서"가
+# "코드트리"와 안 겹쳐서 키워드 검색의 장점이 무색해진다.
+bm25 = ["rank-bm25>=0.2", "kiwipiepy>=0.18"]
 
 [dependency-groups]
 dev = [

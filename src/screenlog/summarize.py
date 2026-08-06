@@ -105,6 +105,26 @@ HANDOVER_PROMPT = """아래는 사용자의 활동을 날짜별로 미리 요약
 - 이전 대화가 있으면 참고해서 팔로우업 질문에 답한다.
 """
 
+
+SLACK_PROMPT = """아래는 {context_label}.
+{history}
+{context}
+
+질문: {question}
+
+위 내용을 슬랙 메시지로 그대로 전달해라.
+
+톤: 질문에 "업무용으로"/"보고용으로"/"공식적으로"처럼 격식을 명시적으로
+요구하는 표현이 있으면, 업무 보고체("~하였습니다")와 필요하면 불릿 정리를
+써서 격식 있게 쓴다. 그런 표현이 없으면(기본값), 옆 사람한테 옮겨 전하듯
+편한 대화체("~했어요", "~더라고요")로 쓰고 문서 형식(제목/섹션)은 쓰지 않는다.
+
+규칙:
+- 위 내용에 실제로 있는 사실만으로 쓴다. 새로 조사하거나 없는 내용을 지어내거나
+  다른 주제를 섞지 않는다.
+- 이전 대화가 있으면 참고해서 팔로우업 질문에 답한다.
+"""
+
 SUMMARY_EXCERPT = 300   # 하루 요약 프롬프트엔 이벤트를 다 넣으니, 하나당 길이를 줄인다.
 
 
@@ -148,6 +168,7 @@ def browse(date, app=None, hour_start=None, hour_end=None, site=None):
     "재귀 오염"(docs/troubleshooting-star.md #8) 때문에 무관한 날짜/기간
     질문에 디버깅 출력이 진짜 활동으로 섞여 들어가는 걸 막는다. ask.py의
     search()와 같은 규칙이다.
+
     """
     where = _build_where(date, app, hour_start, hour_end)
     col = get_collection()
@@ -182,6 +203,7 @@ def _thin_out(events, max_events):
     앞에서부터 자르면 하루의 앞부분만 남고 오후·저녁이 통째로 사라진다.
     바쁜 날(실측: 하루 2,844개)은 이대로 프롬프트에 다 넣으면 100만 자를
     넘는다. 골고루 골라내면 개수는 줄어도 하루 전체를 훑을 수 있다.
+
     """
     if len(events) <= max_events:
         return events
@@ -261,7 +283,7 @@ async def compare_range(question, dates, app=None, hour_start=None, hour_end=Non
     """비교형 — 하루 요약들을 다시 한번 LLM에 넣어 비교/판단시킨다.
 
     "언제가 제일 바빴어?"는 하루 요약을 그냥 늘어놔선 답이 안 나온다. LLM이
-    날짜를 가로질러 비교해야 하므로 2차 호출을 한 번 더 태운다.
+    날짜를 가로질러 비교해야 하므로 2차 호출을 한 번 더 진행한다.
     """
     days = await asyncio.gather(*[
         summarize_day(date, app, hour_start, hour_end, site) for date in dates
@@ -283,6 +305,38 @@ async def handover_range(question, dates, app=None, hour_start=None, hour_end=No
     combined = "\n\n".join(days)
     return await _call_llm(HANDOVER_PROMPT.format(context=combined, question=question,
                                                     history=_format_history(history)))
+
+
+async def draft_slack_range(question, dates, app=None, hour_start=None, hour_end=None, site=None, history=None):
+    """슬랙 공유용 초안 — handover_range()와 같은 2단계 구조(날짜별 요약 ->
+    종합 LLM 호출 1회)를 쓰되, 목적이 "인수인계 문서"가 아니라 "팀 채널에
+    바로 붙여넣을 짧은 메시지"라 프롬프트만 다르다. 실제 전송(execute)은
+    이 함수의 책임이 아니다 — 초안 텍스트만 만든다."""
+    days = await asyncio.gather(*[
+        summarize_day(date, app, hour_start, hour_end, site) for date in dates
+    ])
+    combined = "\n\n".join(days)
+    prompt = SLACK_PROMPT.format(
+        context_label="사용자의 활동을 날짜별로 미리 요약해둔 것이다",
+        context=combined, question=question, history=_format_history(history),
+    )
+    return await _call_llm(prompt)
+
+
+async def draft_slack_from_text(question, source_text):
+    """"그거 슬랙으로 보내자"류 후속 요청 전용 — 재조회하지 않고 이미 있는
+    답변(source_text)을 그대로 재포맷만 한다.
+
+    draft_slack_range()처럼 날짜/앱으로 다시 조회하게 하면, 그 필터를 LLM이
+    대화 맥락에서 다시 추론해야 한다. 이 추론이 틀리면 완전히 무관한 내용이
+    나온다(실측: "00과의 카톡 정리해줘" 다음 "슬랙에 보내자"가 필터를 못
+    잡고 그날의 다른 활동을 요약해버린 사고). source_text는 LLM이 다시
+    타이핑해서 주는 게 아니라 호출자가 대화 기록에서 그대로 꺼내 넘겨야
+    한다 — 그래야 재생성 과정에서 디테일이 틀릴 여지 자체가 없다."""
+    prompt = SLACK_PROMPT.format(
+        context_label="직전에 만든 답변이다", context=source_text, question=question, history="",
+    )
+    return await _call_llm(prompt)
 
 
 async def summarize_period(period, app=None, hour_start=None, hour_end=None, site=None, history=None, question=None):
@@ -333,10 +387,7 @@ def count_range(dates, app=None, site=None, field="app"):
     metas = result["metadatas"]
     if site:
         metas = [m for m in metas if site_matches(site, m)]
-    # field="site"로 셀 때 빈 문자열("" = url 없음, 브라우저가 아니거나 url이
-    # 캡처 당시 비어 있던 경우)까지 그대로 세면 "가장 많이 등장한 건 (공백)
-    # 97회"처럼 의미 없는 1등이 나온다. app은 항상 값이 있어서 이 필터가
-    # 영향을 안 준다.
+
     return Counter(meta[field] for meta in metas if meta.get(field))
 
 
@@ -358,7 +409,7 @@ async def build_summary_cache(dates=None, concurrency=5):
     게이트웨이가 죽었을 때 색인까지 같이 실패한다. 순서상 색인 뒤에 돌리되,
     실패해도 색인 결과는 남도록 별도 명령으로 둔다.
 
-    concurrency로 동시 호출 수를 묶는다 — 13일치를 한꺼번에 던지면
+    concurrency로 동시 호출 수를 묶는다 — 몇십일치를 한꺼번에 던지면
     레이트리밋에 걸린다.
     """
     if dates is None:

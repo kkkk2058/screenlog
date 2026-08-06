@@ -34,7 +34,7 @@ APP_ALIASES = {
     "터미널": ["터미널", "terminal"],
 }
 
-_APP_HINT = "\n".join(f"    {app}: {'/'.join(aliases)}" for app, aliases in APP_ALIASES.items())
+_APP_HINT = "\n".join(f"{app}: {'/'.join(aliases)}" for app, aliases in APP_ALIASES.items())
 
 # app은 "Google Chrome"처럼 실행 중인 프로그램 단위라, "유튜브에서 본 영상"처럼
 # 브라우저 *안에서* 방문한 사이트는 app만으로 못 거른다("이번 주 유튜브 정리해줘"가
@@ -42,6 +42,7 @@ _APP_HINT = "\n".join(f"    {app}: {'/'.join(aliases)}" for app, aliases in APP_
 # 찍히길래(실측: "... - YouTube - Chrome - ...") 그걸 부분 문자열로 거르는
 # 별도 필터를 뒀다. chroma where는 metadata 부분일치를 못 해서, site는 chroma
 # 쿼리가 아니라 가져온 이벤트를 파이썬에서 후처리로 거른다(browse_events.py 참고).
+
 SITE_ALIASES = {
     "YouTube": ["유튜브", "youtube"],
     "Notion": ["노션", "notion"],
@@ -90,7 +91,11 @@ def site_matches(site, meta):
 ROUTE_PROMPT = """질문을 읽고 화면 기록 조회 계획을 세워라. 오늘은 {today}이다.
 {history}
 현재 질문에 "그날"/"거기서"/"그거" 같은 지시어가 있으면, 위 이전 대화를 참고해서
-무엇을 가리키는지 판단한 뒤 아래 필드를 채운다. 이전 대화가 없으면 이 문단은 무시한다.
+무엇을 가리키는지 판단한 뒤 아래 필드를 채운다. 지시어가 없어도, 질문 자체에
+날짜/기간 언급이 전혀 없이 이전 대화에 곧바로 이어지는 후속 요청이면(예: 직전
+질문이 "...만들어줘 슬랙으로 보내자 그리고"처럼 끊겼고 이번 질문이 "슬랙에
+보내"뿐인 경우) 같은 방식으로 이전 대화의 app/site/기간을 이어받는다. 이전
+대화가 없으면 이 문단은 무시한다.
 
 app: 특정 앱이나 앱 종류를 가리킬 때만 아래 후보 중 하나로 채운다. 없으면 null.
 {app_hint}
@@ -110,7 +115,9 @@ periods: 질문이 다루는 기간을 리스트로 뽑는다.
     - "저번주 정리하고 이번주랑 비교"처럼 기간이 여러 개 언급되면 각각을
       별도 항목으로 넣는다 (이 예시는 2개).
     - 특정 기간 언급이 전혀 없는 질문("카카오톡에서 무슨 얘기 했어?")은
-      빈 리스트로 둔다 — 그 경우 전체 기록에서 검색한다.
+      빈 리스트로 둔다 — 그 경우 전체 기록에서 검색한다. 단, 위 지시어
+      문단에 해당하는 후속 요청(이전 대화를 이어받는 경우)이면 오늘로
+      임의 채우지 말고 이전 대화에서 실제로 쓰인 기간을 그대로 넣는다.
     각 항목은 {{"label": str, "start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}}이고
     start<=end. 한 기간이 {max_days}일을 넘지 않게 한다.
 
