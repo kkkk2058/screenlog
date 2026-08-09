@@ -22,7 +22,7 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from screenlog.summarize import (
     DAY_SUMMARY_PROMPT, COMPARE_PROMPT, SLACK_PROMPT,

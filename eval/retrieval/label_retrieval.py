@@ -25,7 +25,7 @@ import pydoc
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from screenlog.ask import build_where          # noqa: E402
 from screenlog.config import AI_APPS           # noqa: E402

@@ -24,7 +24,7 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from chunk_sweep import QUESTIONS, build_collection, recall_at_k, search  # noqa: E402

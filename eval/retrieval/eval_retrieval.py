@@ -26,7 +26,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # label_retrieval.py를 같은 폴더에서 import
 
 from label_retrieval import search_with_ids  # noqa: E402

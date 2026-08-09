@@ -5,28 +5,32 @@
 다룬다. 라우팅이 필터를 완벽히 뽑아도, 그 필터 안에서 벡터 검색이 진짜 근거를
 놓치면 최종 답은 여전히 틀린다.
 
-목표는 두 가지였다:
+목표는 세 가지였다:
 1. 청킹 파라미터(JACCARD_MIN)를 바꾸면 검색 recall이 달라지는가
 2. 검색 개수(RETRIEVE_K)는 지금 값(10)이 적절한가
+3. dense 벡터 검색 단독보다 나은 검색 전략(BM25/하이브리드/리랭커/HyDE)이 있는가
 
-결론부터: **청킹은 기본값(0.3)을 유지했고, RETRIEVE_K는 10 → 8로 낮췄다.**
-근거와 과정, 그리고 도중에 두 번 저지른 라벨링 실수까지 전부 기록한다.
+결론부터: **청킹과 검색 전략은 기본값(JACCARD_MIN=0.3, dense 단독)을
+유지했고, RETRIEVE_K만 10 → 8로 낮췄다.** 다섯 개 대안 검색 전략을
+시도했지만 전부 dense 단독을 못 이겼다 — "실험해서 안 바꾸기로 했다"도
+이 리포트의 결론 중 하나다. 근거와 과정, 그리고 도중에 저지른 라벨링
+실수들까지 전부 기록한다.
 
 ---
 
-## Phase 0 — 검색 골든셋 (`eval/retrieval_questions.jsonl`)
+## Phase 0 — 검색 골든셋 (`eval/retrieval/retrieval_questions.jsonl`)
 
 ### 왜 새 골든셋이 필요했나
 
-`eval/questions.jsonl`(기존)은 "app/date/hour 필터가 맞았는가"만 잰다. 필터가
+`eval/routing/questions.jsonl`(기존)은 "app/date/hour 필터가 맞았는가"만 잰다. 필터가
 맞아도 그 안에서 벡터 검색이 top-k 안에 정답을 못 가져오면 답은 틀리는데, 이걸
 잴 방법이 없었다. 그래서 "질문 → 정답 이벤트(event_id)"를 사람이 직접 확인해서
 저장하는 골든셋을 새로 만들었다.
 
-### 만드는 방법 — `eval/label_retrieval.py`
+### 만드는 방법 — `eval/retrieval/label_retrieval.py`
 
 ```bash
-uv run python eval/label_retrieval.py --dates 2026-07-26 --app 카카오톡
+uv run python eval/retrieval/label_retrieval.py --dates 2026-07-26 --app 카카오톡
 ```
 
 질문을 입력하면 후보 이벤트를 보여주고, 정답 번호를 고르면 `event_id`와 함께
@@ -88,10 +92,10 @@ Discord와 Gmail/Zoom은 시도했지만 쓸 만한 질문을 못 만들었다 �
 
 ---
 
-## Phase 1 — Baseline recall (`eval/eval_retrieval.py`)
+## Phase 1 — Baseline recall (`eval/retrieval/eval_retrieval.py`)
 
 ```bash
-uv run python eval/eval_retrieval.py
+uv run python eval/retrieval/eval_retrieval.py
 ```
 
 기존 색인(JACCARD_MIN=0.3, BGE-M3, 프로덕션 chroma 컬렉션)에 골든셋 25문항을
@@ -118,7 +122,7 @@ uv run python eval/eval_retrieval.py
 
 ---
 
-## Phase 2 — 청킹(JACCARD_MIN) 스윕 (`eval/chunk_sweep.py`)
+## Phase 2 — 청킹(JACCARD_MIN) 스윕 (`eval/retrieval/chunk_sweep.py`)
 
 ### id 매칭이 안 되는 문제
 
@@ -183,7 +187,7 @@ recall이 나쁘다는 근거)이 없는 상태에서 굳이 바꿀 이유가 �
 
 Phase 1의 recall@k 표(k=5~20)를 다시 보면, k=10과 k=20이 이미 똑같이
 1.00이다 — k를 더 키워도 recall이 절대 안 늘어난다는 뜻이라, 별도
-스윕 스크립트(`eval/k_sweep.py`, 재청킹 필요)를 새로 돌릴 필요가
+스윕 스크립트(`eval/retrieval/k_sweep.py`, 재청킹 필요)를 새로 돌릴 필요가
 없었다. 다만 5~10 사이 세밀한 값이 궁금해서 `eval_retrieval.py`의
 `K_VALUES`에 6/7/8/9를 추가해서(재청킹 없이 기존 색인에 쿼리만
 추가하는 거라 몇 초면 끝남) 다시 돌렸다:
@@ -207,20 +211,166 @@ KAN 보드 관련 페이지가 여러 개라 넓게 봐야 다 잡히는 케이�
 
 ---
 
+## Phase 4 — 검색 전략 비교 (dense vs BM25 vs 하이브리드 vs 리랭커 vs HyDE)
+
+### 왜 필요했나
+
+`eval/REPORT.md`에 이미 남아있는 실측 사례(q14, "chromadb"를 "Chrome"으로
+오인식)처럼, 형태소가 비슷한 고유명사는 dense 임베딩이 약할 수 있다. "코퍼스가
+커지면 하이브리드 검색이 필요해질 것"이라는 게 원래 로드맵의 가정이었다 — 그
+가정을 실제로 검증했다.
+
+### 지표 — recall만으론 부족해서 precision/F1도 쟀다
+
+recall@k만 보면 "많이 가져오면 어차피 정답이 들어있다"는 착시가 생길 수
+있다. 그래서 세 지표를 다 쟀다:
+
+- **recall@k** = 찾아야 할 정답 중 top-k 안에 들어온 비율
+- **precision@k** = top-k로 가져온 것 중 실제 정답인 비율
+- **F1@k** = 둘의 조화평균
+
+`eval/retrieval/final_search_comparison.py`가 7개 방법을 **하나의 스크립트, 같은 채점
+함수**로 통일해서 쟀다(따로 실험할 때 스크립트마다 구현이 미묘하게 달라
+비교가 왜곡되는 걸 막기 위해서다). 결과(`eval/retrieval/runs/final_search_comparison_*.json`):
+
+| 방법 | R@5 | P@5 | F1@5 | R@10 | P@10 | F1@10 |
+|---|---|---|---|---|---|---|
+| **dense**(프로덕션) | 0.95 | 0.60 | 0.69 | 1.00 | 0.50 | 0.62 |
+| bm25 | 0.63 | 0.34 | 0.42 | 0.71 | 0.25 | 0.34 |
+| bm25 + 쿼리 확장 | 0.55 | 0.26 | 0.33 | 0.68 | 0.23 | 0.33 |
+| 하이브리드(dense+bm25) | 0.94 | 0.50 | 0.61 | 0.97 | 0.33 | 0.47 |
+| 하이브리드(dense+bm25 확장) | 0.89 | 0.50 | 0.60 | 0.97 | 0.35 | 0.49 |
+| 리랭커(cross-encoder) | 0.93 | 0.63 | 0.69 | 0.96 | 0.54 | 0.64 |
+| HyDE | 0.68 | 0.35 | 0.44 | 0.80 | 0.28 | 0.39 |
+
+precision이 전반적으로 낮아 보이는 건 검색이 나빠서가 아니다 — 골든셋에
+정답이 1개뿐인 질문(r03, r04 등)도 top-5를 다 채워서 채점하니, 완벽하게
+맞혀도 precision@5 상한이 1/5=0.20이다. 이건 구조적인 현상이라 방법 간
+**상대 비교**로만 해석해야 한다.
+
+### 1) BM25 — 날것도, 쿼리 확장을 붙여도 dense에 못 미침
+
+`eval/retrieval/label_retrieval.py`가 쓰던 것과 같은 필터(app/site/dates, AI_APPS
+제외)를 적용한 후보 풀 안에서 형태소 분석(kiwipiepy) + `rank_bm25`로
+순위를 매겼다. 이유를 몇 개 확인했다:
+
+- **r23**("커밋 컨벤션") — 실제 화면엔 영어로 "Commit 타입"이라 찍혀 있는데
+  질문은 "커밋"(한글 표기)이라 형태소 토큰이 아예 안 겹침. dense는 의미
+  유사도로 커버하지만 BM25는 토큰이 안 맞으면 못 찾는다.
+- **r05** — 질문 자체에 오타가 섞여 있어 토큰 매칭이 실패.
+
+screenpipe(FTS5)는 복합어 분리 + 접두어 매칭으로 이런 케이스를 보완하길래,
+`eval/retrieval/search_strategy_sweep.py`의 `expand_query_tokens()`로 비슷하게
+흉내내봤다 — 쿼리 토큰과 접두어가 겹치는 코퍼스 어휘를 전부 쿼리에
+추가하는 방식. **오히려 더 나빠졌다**(R@5 0.63→0.55) — "이", "그" 같은
+흔한 짧은 형태소가 어휘 수백 개와 접두어가 겹쳐서 노이즈만 늘었다.
+screenpipe의 실제 구현은 `split_compound()`로 "이게 진짜 복합어인지"부터
+판단한 뒤에만 확장하는데, 그 판단 로직 없이 어휘 전체를 접두어로 훑은
+게 원인이다 — 제대로 하려면 이 판단 로직부터 다시 짜야 하는데, dense가
+이미 0.95라 그 투자가 값어치 있을지는 의문이다.
+
+### 2) 하이브리드(RRF) — BM25가 안 좋으니 섞어도 손해
+
+`rrf_merge()`(Reciprocal Rank Fusion, 상수 60)로 dense와 bm25 순위를
+합쳤다. BM25 단독 성능이 나쁘다 보니, 섞으면 dense 단독보다 항상
+나빴다(F1@5 0.69→0.61). BM25 쪽이 개선되지 않는 한 하이브리드도 의미가
+없다.
+
+### 3) 리랭커 — 평균은 비슷한데, 메커니즘을 보면 "동률"이 아니다
+
+dense top-20을 `BAAI/bge-reranker-v2-m3`(cross-encoder)로 재정렬했다.
+전체 평균(F1@5 0.69, dense와 동일)만 보면 "차이 없다"로 보이지만, 문항별로
+뜯어보면 **서로 다른 실패를 주고받은 것**이다:
+
+| qid | dense R@10 | rerank R@10 | 뭐가 일어났나 |
+|---|---|---|---|
+| r15(준혁이) | 0.50(@5) | **1.00**(@5) | 크게 개선 — 정답이 하나뿐인 질문에서 정밀하게 끌어올림 |
+| r08(AWS EC2) | 1.00 | **0.33** | 크게 악화 |
+| r25(Jira) | 1.00 | **0.67** | 악화 |
+
+r08과 r25는 **정답이 서로 다른 페이지 여러 개인 질문**이다("인스턴스",
+"인스턴스 시작", "EC2 홈" 세 페이지 다 정답). dense는 이미 10위 안에 셋
+다 담고 있었는데, 리랭커가 재정렬하면서 그중 "제일 그럴듯한 것 하나"에
+점수를 몰아주고 나머지를 20위 밖으로 밀어냈다. **cross-encoder는 질문과
+가장 비슷한 하나의 해석에 수렴하는 경향이 있어서, 정답이 여러 개로 갈리는
+질문에 불리하다.** 이 패턴은 재현성 있게 다시 나왔다(`final_search_comparison.py`
+재실행에서도 동일).
+
+전체 평균이 dense와 비슷했던 건 "리랭커가 잘한다"가 아니라, r15류의 개선분과
+r08/r25류의 악화분이 우연히 서로 상쇄된 결과에 가깝다.
+
+### 4) HyDE — 가장 나빴음
+
+질문 대신 LLM이 지어낸 "그럴듯한 화면 캡처 텍스트"를 임베딩해서 검색했다.
+r05, r10, r14, r18, r22, r23, r25는 **recall 0.00**으로 완전히 실패했다.
+리랭커는 그래도 실제 후보 문서를 보고 그중에서 골랐지만, HyDE는 문서를
+전혀 안 보고 **상상만으로** 텍스트를 만든다 — 수강코드(r14)나 커밋
+컨벤션(r23)처럼 구체적인 사실을 묻는 질문은 애초에 맞힐 방법이 없었다.
+"하나의 해석으로 수렴한다"는 리랭커와 같은 약점을, 실제 문서를 참고하지
+않는 만큼 더 나쁘게 겪은 셈이다.
+
+### Phase 4 결론
+
+**다섯 번 시도해서 dense 단독을 확실히 이긴 건 없었다.**
+
+- BM25/하이브리드/HyDE는 명백히 dense보다 나쁨
+- 리랭커는 평균은 비슷하지만, "정답이 여러 개인 질문"에서 다양성을
+  해치는 부작용이 있어 전면 도입은 위험함(정답이 하나뿐인 질문에만
+  선별 적용하는 정도면 몰라도, 지금 골든셋 구성상 그 판단 기준을
+  미리 알 수 없음)
+
+**검색 전략은 지금(dense 단독, BGE-M3) 그대로 유지한다.** 프로덕션
+코드 변경 없음 — Phase 3의 `RETRIEVE_K=8`만 실제 반영된 변경이다.
+
+### 4-4) 임베딩 모델 비교 — BGE-M3를 다른 모델로 바꿔도 안 나아짐
+
+Phase 4의 나머지가 "검색 알고리즘"을 바꾼 실험이었다면, 이건 검색 알고리즘은
+그대로 두고 **임베딩 모델 자체**를 바꿔본 것이다. 청킹(JACCARD_MIN=0.3)은
+그대로 두고, 같은 이벤트 텍스트를 다른 모델로 재임베딩해서 골든셋으로
+recall/precision/F1을 다시 쟀다(`eval/retrieval/embedding_model_sweep.py`).
+
+비교 대상:
+
+- **bge-m3**(baseline) — 지금 프로덕션이 쓰는 모델
+- **multilingual-e5-large** — 다국어, BGE-M3와 비슷한 체급(비대칭 검색용
+  `query:`/`passage:` 접두어 적용)
+- **ko-sroberta-multitask** — 한국어 전용, 더 가벼운 모델
+
+| 모델 | R@5 | P@5 | F1@5 | R@10 | P@10 | F1@10 |
+|---|---|---|---|---|---|---|
+| **bge-m3**(프로덕션) | 0.95 | 0.60 | 0.69 | 1.00 | 0.50 | 0.62 |
+| multilingual-e5-large | 0.74 | 0.41 | 0.50 | 0.86 | 0.38 | 0.49 |
+| ko-sroberta-multitask | 0.54 | 0.30 | 0.37 | 0.67 | 0.29 | 0.37 |
+
+두 모델 다 BGE-M3보다 뚜렷하게 나쁘다. ko-sroberta는 한국어 전용이라
+기대했지만 다국어 모델인 BGE-M3에도 못 미쳤다 — 화면 캡처 텍스트에 영어
+UI 문자열·고유명사가 섞여 있어, 한국어 특화보다 다국어 커버리지가 더
+중요한 것으로 보인다. **임베딩 모델도 교체 근거가 없어 BGE-M3를
+유지한다.** Phase 4 전체 결론("dense 단독, BGE-M3 유지, RETRIEVE_K=8만
+변경")에 그대로 합류하는 결과다.
+
+---
+
 ## 실제로 바뀐 것 요약
 
 | 파일 | 변경 |
 |---|---|
 | `src/screenlog/config.py` | `RETRIEVE_K`: 10 → 8 (근거 주석 포함) |
-| `eval/label_retrieval.py` | 신규 — 검색 골든셋 라벨링 도구 |
-| `eval/eval_retrieval.py` | 신규 — recall@k 측정 스크립트 |
-| `eval/chunk_sweep.py` | 신규 — JACCARD_MIN 스윕 (재청킹, 인메모리) |
-| `eval/k_sweep.py` | 신규 — k 스윕용(실제로는 안 씀, Phase 1 데이터로 대체됨) |
-| `eval/retrieval_questions.jsonl` | 신규 — 골든셋 25문항 |
-| `eval/runs/retrieval_baseline_*.jsonl` | 신규 — Phase 1 실행 결과들 |
+| `pyproject.toml` | `bm25` optional extra 추가 (`rank-bm25`, `kiwipiepy`) — Phase 4 실험용, 프로덕션 코어 의존성 아님 |
+| `eval/retrieval/label_retrieval.py` | 신규 — 검색 골든셋 라벨링 도구 |
+| `eval/retrieval/eval_retrieval.py` | 신규 — recall@k 측정 스크립트 |
+| `eval/retrieval/chunk_sweep.py` | 신규 — JACCARD_MIN 스윕 (재청킹, 인메모리) |
+| `eval/retrieval/k_sweep.py` | 신규 — k 스윕용(실제로는 안 씀, Phase 1 데이터로 대체됨) |
+| `eval/retrieval/search_strategy_sweep.py` | 신규 — BM25/쿼리 확장/하이브리드(RRF) 실험 |
+| `eval/retrieval/rerank_sweep.py` | 신규 — cross-encoder 리랭커 실험 |
+| `eval/retrieval/hyde_sweep.py` | 신규 — HyDE 실험 |
+| `eval/retrieval/final_search_comparison.py` | 신규 — 7개 방법을 recall/precision/F1로 통일해서 재측정 |
+| `eval/retrieval/embedding_model_sweep.py` | 신규 — BGE-M3 vs e5-large vs ko-sroberta 임베딩 모델 비교 |
+| `eval/retrieval/retrieval_questions.jsonl` | 신규 — 골든셋 25문항 |
+| `eval/retrieval/runs/*.jsonl`, `*.json` | 신규 — 각 Phase 실행 결과들 |
 
-JACCARD_MIN(청킹 세밀도)은 **바꾸지 않았다** — 실험했지만 반증할 근거가
-부족해서 기본값을 유지한 것도 하나의 결론이다.
+JACCARD_MIN(청킹 세밀도)과 검색 전략(dense 단독)은 **바꾸지 않았다** —
+둘 다 실험했지만 바꿀 근거가 부족해서 기본값을 유지한 것도 결론이다.
 
 ---
 
