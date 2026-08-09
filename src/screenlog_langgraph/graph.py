@@ -28,8 +28,8 @@ from screenlog.summarize import (
     compare_range,
     count_range,
     format_count,
+    stream_summarize_range,
     summarize_period,
-    summarize_range,
 )
 
 
@@ -67,14 +67,21 @@ async def _stream_and_collect(**kwargs) -> dict:
 
 
 async def _search_node(state: State) -> dict:
-    """검색 intent — 기간이 있으면 그 안에서(dates=$in), 없으면 전체에서 벡터 검색."""
+    """검색 intent — 기간이 있으면 그 안에서(dates=$in), 없으면 전체에서 벡터 검색.
+
+    벡터 검색엔 원래 질문(state["question"])이 아니라 plan["search_query"]를
+    쓴다 — "최근 일주일로 넓혀서 알려줘"처럼 주제 없이 범위만 담긴 후속
+    요청은 원래 질문 그대로 검색하면 주제 단어가 빠져서 아무것도 못
+    찾는다(실측: hits 0개). route()가 이미 이전 대화를 참고해서 주제를
+    합친 완전한 검색 문장을 만들어주므로 그걸 쓴다."""
     plan = state["plan"]
     periods = plan["periods"]
     dates = [d for period in periods for d in period["dates"]] or None
     search_k = MAX_PERIOD_SEARCH_K if dates else state["k"]
     return await _stream_and_collect(
-        question=state["question"], k=search_k, app=plan["app"], hour_start=plan["hour_start"],
-        hour_end=plan["hour_end"], site=plan["site"], dates=dates, history=state.get("history"),
+        question=plan.get("search_query") or state["question"], k=search_k, app=plan["app"],
+        hour_start=plan["hour_start"], hour_end=plan["hour_end"], site=plan["site"], dates=dates,
+        history=state.get("history"),
     )
 
 
@@ -82,8 +89,9 @@ async def _fallback_search_node(state: State) -> dict:
     """periods가 비어있고 intent도 검색이 아닌 드문 경우 — 필터 없는 검색으로 떨어진다."""
     plan = state["plan"]
     return await _stream_and_collect(
-        question=state["question"], k=state["k"], app=plan["app"], hour_start=plan["hour_start"],
-        hour_end=plan["hour_end"], site=plan["site"], history=state.get("history"),
+        question=plan.get("search_query") or state["question"], k=state["k"], app=plan["app"],
+        hour_start=plan["hour_start"], hour_end=plan["hour_end"], site=plan["site"],
+        history=state.get("history"),
     )
 
 
@@ -136,15 +144,25 @@ async def _single_period_node(state: State) -> dict:
     if plan["intent"] == "집계":
         counter = count_range(dates, app=app, site=site,
                                field="site" if plan["count_by_site"] else "app")
-        answer = format_count(counter)
-    elif plan["intent"] == "비교":
+        return _emit_answer(format_count(counter))
+
+    if plan["intent"] == "비교":
         answer = await compare_range(question, dates, app=app, hour_start=hour_start, hour_end=hour_end,
                                       site=site, history=history)
-    else:
-        answer = await summarize_range(dates, app=app, hour_start=hour_start, hour_end=hour_end, site=site,
-                                        history=history, question=question)
+        return _emit_answer(answer)
 
-    return _emit_answer(answer)
+    # 정리 — screenlog.ask.stream_ask_auto()와 마찬가지로 asyncio.gather로
+    # 다 모아서 한 방에 보내지 않고, 하루씩 끝나는 대로 바로 내보낸다.
+    writer = get_stream_writer()
+    writer({"type": "hits", "hits": []})
+    answer_parts = []
+    async for block in stream_summarize_range(dates, app=app, hour_start=hour_start, hour_end=hour_end,
+                                               site=site, history=history, question=question):
+        chunk = block + "\n\n"
+        writer({"type": "token", "text": chunk})
+        answer_parts.append(chunk)
+    writer({"type": "done"})
+    return {"answer": "".join(answer_parts), "hits": None}
 
 
 def _branch(state: State) -> str:

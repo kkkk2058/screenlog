@@ -37,14 +37,18 @@ from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.prebuilt import InjectedState, ToolNode
 
 from screenlog.ask import ask as _ask
-from screenlog.config import AGENT_CHAT_MODEL, API_KEY, BASE_URL, RETRIEVE_K
+from screenlog.ask import build_context as _build_context
+from screenlog.ask import search as _search
+from screenlog.config import AGENT_CHAT_MODEL, API_KEY, BASE_URL, MAX_PERIOD_SEARCH_K, RETRIEVE_K
 from screenlog.router import _APP_HINT, _SITE_HINT, _expand_period, _format_history, route
 from screenlog.source import LOCAL_TZ, weekday_ko
 from screenlog.summarize import compare_range as _compare_range
 from screenlog.summarize import count_range as _count_range
+from screenlog.summarize import draft_slack_from_search as _draft_slack_from_search
 from screenlog.summarize import draft_slack_from_text as _draft_slack_from_text
 from screenlog.summarize import draft_slack_range as _draft_slack_range
 from screenlog.summarize import format_count as _format_count
+from screenlog.summarize import handover_from_context as _handover_from_context
 from screenlog.summarize import handover_range as _handover_range
 from screenlog.summarize import summarize_range as _summarize_range
 
@@ -108,12 +112,20 @@ async def compare_days(
                   "진행 중·이어서 할 것 / 참고할 점)으로 정리한다. \"인수인계\", "
                   "\"작업기록\", \"핸드오프\" 같은 요청, 또는 \"내가 뭐까지 했는지 "
                   "다음에 이어받을 수 있게 정리해줘\"류 요청에 쓴다. 그냥 \"정리해줘\"는 "
-                  "summarize_days를 써라 — 이건 인수인계 양식이 명시적으로 필요할 때만."
+                  "summarize_days를 써라 — 이건 인수인계 양식이 명시적으로 필요할 때만.\n\n"
+                  "요청이 특정 주제로 좁혀져 있으면(예: \"AWS 관련 작업만 인수인계로\") "
+                  "search_query에 그 주제를 채워라 — 그러면 기간 전체를 훑는 대신 그 안에서 "
+                  "벡터 검색으로 관련 이벤트만 찾아 문서를 만든다. \"이번주 다 정리해줘\"처럼 "
+                  "주제 제한이 없으면 search_query를 비워둬라(기간 전체 요약)."
                   "(YYYY-MM-DD, 둘 다 포함)")
 async def draft_handover_doc(
     question: str, start_date: str, end_date: str, app: Optional[str] = None, site: Optional[str] = None,
+    search_query: Optional[str] = None,
 ) -> str:
     dates = _expand_period(start_date, end_date)
+    if search_query:
+        hits = _search(search_query, k=MAX_PERIOD_SEARCH_K, app=app, site=site, dates=dates)
+        return await _handover_from_context(question, _build_context(hits))
     return await _handover_range(question, dates, app=app, site=site)
 
 
@@ -123,6 +135,9 @@ async def draft_handover_doc(
                   "사용자에게 초안을 보여주고 승인을 기다려라, 되묻지 않고 자동으로 올리지 않는다. "
                   "인수인계 문서 형식이 필요하면 draft_handover_doc을 대신 써라.\n\n"
                   "start_date/end_date는 둘 다 줄 때만 새로 조회한다(YYYY-MM-DD, 둘 다 포함). "
+                  "그중 요청이 특정 주제로 좁혀져 있으면(예: \"AWS 얘기만 슬랙으로\") search_query에 "
+                  "그 주제를 채워라 — 기간 전체를 훑는 대신 벡터 검색으로 관련 이벤트만 찾는다. "
+                  "주제 제한이 없으면(\"이번주 다\") search_query는 비워둬라.\n\n"
                   "\"방금 그거 슬랙으로 보내자\"처럼 새 기간/주제 언급 없이 직전 답변을 그대로 "
                   "공유해달라는 요청이면 start_date/end_date를 둘 다 비워둬라 — 그러면 새로 "
                   "조회하지 않고 바로 직전 답변을 그대로 재포맷한다(내용이 달라질 위험이 없다). "
@@ -133,10 +148,14 @@ async def draft_slack_message(
     end_date: Optional[str] = None,
     app: Optional[str] = None,
     site: Optional[str] = None,
+    search_query: Optional[str] = None,
     history: Annotated[Optional[list], InjectedState("history")] = None,
 ) -> str:
     if start_date and end_date:
         dates = _expand_period(start_date, end_date)
+        if search_query:
+            hits = _search(search_query, k=MAX_PERIOD_SEARCH_K, app=app, site=site, dates=dates)
+            return await _draft_slack_from_search(question, _build_context(hits))
         return await _draft_slack_range(question, dates, app=app, site=site)
     if not history:
         return "직전 답변이 없어서 재사용할 내용이 없습니다. 기간을 지정해서 다시 요청해주세요."
@@ -173,7 +192,6 @@ app 후보(반드시 이 중 하나거나 비워둔다):
 
 site 후보(브라우저 안에서 방문한 사이트, 반드시 이 중 하나거나 비워둔다):
 {site_hint}"""
-
 
 def _plan_hint(plan):
     """route()가 이미 뽑아둔 app/site/기간을 에이전트한테 힌트로 준다.
@@ -251,13 +269,13 @@ async def _tools_call_node(state: ReactState) -> dict:
 
 def _build_react_graph():
     # 도구를 몇 개 썼든 항상 agent로 돌아가서 "더 필요한가"를 다시 판단하게
-    # 한다. 예전엔 "도구 1개짜리 첫 라운드면 끝"이라는 지름길이 있었는데,
-    # 이 그래프는 compound=true(정리/검색/비교/집계 네 갈래로 안 풀리는
-    # 복합 요청)일 때만 타는 경로라 그 가정이 위험했다 — 예를 들어 "8월
-    # 3일 정리해서 슬랙으로 보내"에서 LLM이 정리 도구부터 1개만 부르면,
-    # 슬랙 초안 도구는 호출 기회도 없이 그 결과로 바로 끝나버릴 수 있었다
-    # (재현 확인은 안 했지만 구조상 가능한 경로). LLM 호출이 매번 하나씩
-    # 더 붙는 대신, 그 재확인 자체가 이 경로의 존재 이유다.
+    # 한다. 예전엔 "도구 1개짜리 첫 라운드면 끝"이라는 지름길(shortcut)이
+    # 있었는데, 이 그래프는 compound=true(정리/검색/비교/집계 네 갈래로 안
+    # 풀리는 복합 요청)일 때만 타는 경로라 그 가정이 위험했다 — 예를 들어
+    # "8월 3일 정리해서 슬랙으로 보내"에서 LLM이 정리 도구부터 1개만
+    # 부르면, 슬랙 초안 도구는 호출 기회도 없이 그 결과로 바로 끝나버릴 수
+    # 있었다. LLM 호출이 매번 하나씩 더 붙는 대신, 그 재확인 자체가 이
+    # 경로의 존재 이유다.
     g = StateGraph(ReactState)
     g.add_node("agent", _agent_call_node)
     g.add_node("tools", _tools_call_node)

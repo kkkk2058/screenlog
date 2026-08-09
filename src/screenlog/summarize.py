@@ -279,6 +279,26 @@ async def summarize_range(dates, app=None, hour_start=None, hour_end=None, site=
     return "\n\n".join(days)
 
 
+async def stream_summarize_range(dates, app=None, hour_start=None, hour_end=None, site=None, history=None, question=None):
+    """summarize_range()의 스트리밍 버전 — 하루씩 끝나는 대로 바로 내보낸다.
+
+    summarize_range()는 asyncio.gather()라 전부 끝나야 한꺼번에 반환한다 —
+    그 안에서는 병렬이지만, 밖에서 보면 "제일 느린 하루"가 전체 응답 시간을
+    그대로 결정하고 사용자는 그동안 아무것도 못 본다. asyncio.as_completed()로
+    바꾸면 먼저 끝난 날짜부터 그대로 내보낼 수 있다 — 총 소요 시간은 그대로지만
+    첫 화면이 뜨는 시점(첫 토큰)이 "가장 느린 하루"가 아니라 "가장 빠른 하루"
+    기준으로 당겨진다.
+    """
+    tasks = [
+        asyncio.create_task(
+            summarize_day(date, app, hour_start, hour_end, site, history=history, question=question)
+        )
+        for date in dates
+    ]
+    for coro in asyncio.as_completed(tasks):
+        yield await coro
+
+
 async def compare_range(question, dates, app=None, hour_start=None, hour_end=None, site=None, history=None):
     """비교형 — 하루 요약들을 다시 한번 LLM에 넣어 비교/판단시킨다.
 
@@ -335,6 +355,31 @@ async def draft_slack_from_text(question, source_text):
     한다 — 그래야 재생성 과정에서 디테일이 틀릴 여지 자체가 없다."""
     prompt = SLACK_PROMPT.format(
         context_label="직전에 만든 답변이다", context=source_text, question=question, history="",
+    )
+    return await _call_llm(prompt)
+
+
+async def handover_from_context(question, context, history=None):
+    """"AWS 관련 작업만 인수인계로" 류, 기간 안에서도 특정 주제로 좁혀진
+    요청 전용 — 날짜 전체를 summarize_day()로 훑는 대신, 호출자가 이미
+    벡터 검색으로 걸러낸 근거(context)만 가지고 인수인계 문서를 만든다.
+
+    handover_range()의 day-by-day 경로는 summarize_day()가
+    MAX_EVENTS_PER_DAY_SUMMARY 상한 안에서 그날 전체를 훑기 때문에, 바쁜
+    날엔 주제와 무관한 이벤트에 밀려 정작 찾는 주제가 요약 단계에서부터
+    빠질 수 있다(실측은 아직 없지만 구조상 가능한 경로). 검색으로 미리
+    좁혀두면 그 위험 자체가 없다."""
+    return await _call_llm(HANDOVER_PROMPT.format(context=context, question=question,
+                                                    history=_format_history(history)))
+
+
+async def draft_slack_from_search(question, context, history=None):
+    """handover_from_context()의 슬랙 버전 — 검색으로 미리 걸러낸 근거를
+    슬랙 공유 형식으로 재포맷한다. draft_slack_from_text()(직전 답변
+    재사용)와는 컨텍스트 출처가 다를 뿐 구조는 같다."""
+    prompt = SLACK_PROMPT.format(
+        context_label="사용자가 검색으로 찾은, 특정 주제에 관련된 기록이다",
+        context=context, question=question, history=_format_history(history),
     )
     return await _call_llm(prompt)
 

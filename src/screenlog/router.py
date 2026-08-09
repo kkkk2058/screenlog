@@ -97,7 +97,6 @@ ROUTE_PROMPT = """질문을 읽고 화면 기록 조회 계획을 세워라. 오
 보내"뿐인 경우) 같은 방식으로 이전 대화의 app/site/기간을 이어받는다. 이전
 대화가 없으면 이 문단은 무시한다.
 
-app: 특정 앱이나 앱 종류를 가리킬 때만 아래 후보 중 하나로 채운다. 없으면 null.
 {app_hint}
 
 site: 브라우저 안에서 방문한 특정 사이트/서비스를 가리킬 때만 아래 후보 중
@@ -121,8 +120,19 @@ periods: 질문이 다루는 기간을 리스트로 뽑는다.
     각 항목은 {{"label": str, "start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}}이고
     start<=end. 한 기간이 {max_days}일을 넘지 않게 한다.
 
-intent: 답을 만드는 방식을 고른다. periods가 비어 있으면 무조건 검색이다.
-    periods가 있어도 아래 기준으로 넷 중 하나를 고른다:
+intent: 답을 만드는 방식을 고른다. 위 지시어 문단에 해당하는 후속 요청
+    (이전 대화를 이어받는 경우)이면, 이번 질문이 주제/키워드를 새로
+    안 밝혀도 **intent는 이전 턴의 intent를 그대로 따른다** — "범위를
+    넓혀줘"/"기간만 다르게"처럼 기간만 조정해달라는 요청은 새 요약
+    요청이 아니라 같은 조회를 다른 기간에 다시 하는 것이다. 예를 들어
+    직전 질문이 "<주제>에 대해 언제 그랬는지 알려줘"(검색)였고 이번
+    질문이 "최근 일주일로 넓혀서 알려줘"뿐이면(<주제>가 무엇이든),
+    intent는 검색을 유지한다 — 정리로 바꾸면 필터가 사라져서 완전히
+    다른(무관한) 대답이 나온다. 이 패턴은 특정 주제 단어와 무관하게
+    "후속 요청이 범위/기간만 조정하고 원래 주제를 재언급 안 한 경우"
+    전부에 적용된다.
+    periods가 비어 있으면(그리고 위 후속 요청 규칙도 해당 안 되면)
+    무조건 검색이다. periods가 있어도 아래 기준으로 넷 중 하나를 고른다:
     검색 — 기간이 있든 없든, "찾아봐", "무슨 얘기 했어", "~에 대해 뭐라고
         했어"처럼 기간 전체가 아니라 **그 안의 특정 내용/대화/키워드**를
         찾아야 하는 질문. "이번 주에 카톡에서 약속 잡은 거 찾아봐"는 그
@@ -137,6 +147,19 @@ intent: 답을 만드는 방식을 고른다. periods가 비어 있으면 무조
     집계 — "몇 번 켰어", "얼마나 자주 썼어"처럼 사용 횟수를 세면 끝나는 질문.
         "제일"이 있어도 세는 대상이 "며칠"이 아니라 "앱/행동의 횟수"일 때만
         집계다. "언제가 제일 바빴어"는 날짜를 비교하는 것이므로 비교다.
+
+search_query: intent가 검색일 때만 채운다(아니면 null). 벡터 검색에 실제로
+    쓰일 문장이다 — 보통은 질문을 거의 그대로 쓰면 되지만, 위 지시어
+    문단에 해당하는 후속 요청이면 **주제 없이 범위/기간만 담긴 원래
+    질문 대신, 이전 대화의 주제와 지금 요청을 합친 완전한 문장으로
+    다시 써라.** 예를 들어 직전 질문이 "<주제>에 대해 언제 그랬는지
+    알려줘"였고 이번 질문이 "최근 일주일로 넓혀서 알려줘"뿐이면,
+    search_query는 "최근 일주일로 넓혀서 알려줘"가 아니라 "<주제>에
+    대해 언제 그랬는지"로 채운다(<주제>는 이전 대화에 실제로 언급된
+    내용을 그대로 넣는다) — 후속 요청 문장 그대로 검색하면 원래 주제
+    단어가 빠져서 검색이 아무것도 못 찾는다. 이건 특정 주제에 국한된
+    규칙이 아니라, 검색 문장은 항상 "이전 대화 없이 이 문장만 봐도
+    무엇을 찾는지 알 수 있어야 한다"는 일반 원칙이다.
 
 count_by_site: intent가 집계일 때만 의미가 있다. "크롬에서 뭘 많이 봤어",
     "브라우저에서 어떤 사이트 많이 갔어"처럼 앱 하나의 총 횟수가 아니라
@@ -201,10 +224,11 @@ def _route_schema():
                 },
             },
             "intent": {"type": "string", "enum": ["검색", "정리", "비교", "집계"]},
+            "search_query": {"anyOf": [{"type": "string"}, {"type": "null"}]},
             "count_by_site": {"type": "boolean"},
             "compound": {"type": "boolean"},
         },
-        "required": ["app", "site", "hour_range", "periods", "intent", "count_by_site", "compound"],
+        "required": ["app", "site", "hour_range", "periods", "intent", "search_query", "count_by_site", "compound"],
         "additionalProperties": False,
     }
 
@@ -292,7 +316,7 @@ async def route(question, today=None, history=None):
         parsed = json.loads(response.choices[0].message.content)
     except json.JSONDecodeError:
         parsed = {"app": None, "site": None, "hour_range": None, "periods": [], "intent": "검색",
-                  "count_by_site": False, "compound": False}
+                  "search_query": None, "count_by_site": False, "compound": False}
 
     hour_start, hour_end = _parse_hour_range(parsed.get("hour_range"))
 
@@ -315,6 +339,10 @@ async def route(question, today=None, history=None):
         "hour_end": hour_end,
         "periods": periods,
         "intent": intent,
+        # 검색에 실제로 쓰일 문장. LLM이 못 채웠거나(구조화 출력 실패 등)
+        # intent가 검색이 아니면 원래 질문으로 폴백한다 — 빈 문자열로
+        # 검색하는 것보단 낫다.
+        "search_query": (parsed.get("search_query") or question) if intent == "검색" else None,
         # 집계일 때만 의미 있다 — 앱 단위가 아니라 방문 사이트(도메인)별로
         # 나눠서 세라는 신호. count_range()의 field="site" 인자로 그대로 간다.
         "count_by_site": bool(parsed.get("count_by_site")) and intent == "집계",

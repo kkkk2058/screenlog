@@ -30,6 +30,7 @@ from screenlog.summarize import (
     compare_range,
     count_range,
     format_count,
+    stream_summarize_range,
     summarize_period,
     summarize_range,
 )
@@ -168,6 +169,12 @@ async def ask(question, k=RETRIEVE_K, app=None, hour_start=None, hour_end=None, 
 
     app/hour_range/site/dates는 그대로 search()에 넘긴다. history는 멀티턴
     컨텍스트("그날"/"더 자세히" 같은 팔로우업 해석용) — [{"question","answer"}, ...].
+
+    search()는 동기 함수라 여기서 직접 부르면 그 순간 이벤트 루프가 막힌다.
+    asyncio.to_thread()로 감싸봤지만 search() 자체가 60~70ms로 이미 짧아서
+    (LLM 생성 시간 ~2초에 비해 무시할 만한 수준) 효과가 실측되지 않아 되돌렸다
+    — 근거 없이 코드만 복잡해지는 걸 막기 위해서다(docs/streaming-and-async.md
+    4번 참고).
     """
     hits = search(question, k, app=app, hour_start=hour_start, hour_end=hour_end,
                   site=site, dates=dates)
@@ -235,9 +242,14 @@ async def stream_ask_auto(question, k=RETRIEVE_K, history=None):
     hour_start, hour_end = plan["hour_start"], plan["hour_end"]
 
     if plan["intent"] == "검색":
+        # 원래 질문이 아니라 plan["search_query"]로 검색한다 — "최근 일주일로
+        # 넓혀서 알려줘"처럼 주제 없이 범위만 담긴 후속 요청은 원래 질문
+        # 그대로 검색하면 주제 단어가 빠져서 아무것도 못 찾는다(실측: hits
+        # 0개). route()가 이전 대화를 참고해 주제를 합친 문장을 만들어준다.
+        search_text = plan.get("search_query") or question
         dates = [d for period in periods for d in period["dates"]] or None
         search_k = MAX_PERIOD_SEARCH_K if dates else k
-        async for item in stream_ask(question, k=search_k, app=plan["app"], hour_start=hour_start,
+        async for item in stream_ask(search_text, k=search_k, app=plan["app"], hour_start=hour_start,
                                hour_end=hour_end, site=plan["site"], dates=dates, history=history):
             yield item
         return
@@ -270,22 +282,33 @@ async def stream_ask_auto(question, k=RETRIEVE_K, history=None):
         if plan["intent"] == "집계":
             counter = count_range(dates, app=plan["app"], site=plan["site"],
                                    field="site" if plan["count_by_site"] else "app")
-            answer = format_count(counter)
-        elif plan["intent"] == "비교":
+            yield {"type": "hits", "hits": []}
+            yield {"type": "token", "text": format_count(counter)}
+            yield {"type": "done"}
+            return
+        if plan["intent"] == "비교":
             answer = await compare_range(question, dates, app=plan["app"], hour_start=hour_start,
                                     hour_end=hour_end, site=plan["site"], history=history)
-        else:
-            answer = await summarize_range(dates, app=plan["app"], hour_start=hour_start,
-                                      hour_end=hour_end, site=plan["site"], history=history, question=question)
+            yield {"type": "hits", "hits": []}
+            yield {"type": "token", "text": answer}
+            yield {"type": "done"}
+            return
+
+        # 정리 — asyncio.gather로 다 모아서 한 방에 보내지 않고, 하루씩 끝나는
+        # 대로 stream_summarize_range()로 바로 내보낸다(위 함수 docstring 참고).
         yield {"type": "hits", "hits": []}
-        yield {"type": "token", "text": answer}
+        async for block in stream_summarize_range(dates, app=plan["app"], hour_start=hour_start,
+                                                    hour_end=hour_end, site=plan["site"],
+                                                    history=history, question=question):
+            yield {"type": "token", "text": block + "\n\n"}
         yield {"type": "done"}
         return
 
     # periods가 없는데 intent가 검색이 아닌 드문 경우 — ask_auto()와 동일하게
     # 필터 없는 일반 검색 방식으로 답한다(stream_ask가 done까지 알아서 yield한다).
-    async for item in stream_ask(question, k=k, app=plan["app"], hour_start=hour_start,
-                                  hour_end=hour_end, site=plan["site"], history=history):
+    async for item in stream_ask(plan.get("search_query") or question, k=k, app=plan["app"],
+                                  hour_start=hour_start, hour_end=hour_end, site=plan["site"],
+                                  history=history):
         yield item
 
 
@@ -326,8 +349,8 @@ async def ask_auto(question, k=RETRIEVE_K):
     if plan["intent"] == "검색":
         dates = [d for period in periods for d in period["dates"]] or None
         search_k = MAX_PERIOD_SEARCH_K if dates else k
-        answer, hits = await ask(question, k=search_k, app=plan["app"], hour_start=hour_start,
-                                  hour_end=hour_end, site=plan["site"], dates=dates)
+        answer, hits = await ask(plan.get("search_query") or question, k=search_k, app=plan["app"],
+                                  hour_start=hour_start, hour_end=hour_end, site=plan["site"], dates=dates)
         return answer, plan, hits
 
     if len(periods) >= 2:
@@ -364,8 +387,8 @@ async def ask_auto(question, k=RETRIEVE_K):
                                             hour_end=hour_end, site=plan["site"], question=question)
         return answer, plan, None
 
-    answer, hits = await ask(question, k=k, app=plan["app"], hour_start=hour_start,
-                              hour_end=hour_end, site=plan["site"])
+    answer, hits = await ask(plan.get("search_query") or question, k=k, app=plan["app"],
+                              hour_start=hour_start, hour_end=hour_end, site=plan["site"])
     return answer, plan, hits
 
 

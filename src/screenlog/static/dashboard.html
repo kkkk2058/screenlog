@@ -628,7 +628,10 @@ function renderAnswer(els, text, showCursor){
 function renderHits(els, hits){
   const box=els.hits; box.innerHTML="";
   if(!hits.length){
-    box.append(el("div","hint","근거 없음"));
+    // "근거 없음" 문구를 띄웠었는데, 에이전트 경로(agent.py)는 실제로 검색을
+    // 했어도 hits를 항상 빈 배열로 보내므로(아직 안 고친 부분) 매번 "근거
+    // 없음"이 잘못 뜬다. 고정 경로(정리/비교/집계)도 원래 hits가 없는 게
+    // 정상이라 이 경우엔 문구 자체가 필요 없다 — 그냥 아무것도 안 보여준다.
     return;
   }
 
