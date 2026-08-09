@@ -15,7 +15,7 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from screenlog.summarize import COMPARE_PROMPT, HANDOVER_PROMPT, SLACK_PROMPT, _call_llm
 from screenlog.router import _format_history

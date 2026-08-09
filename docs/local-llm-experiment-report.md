@@ -79,7 +79,7 @@ OpenAI 호환 클라이언트 구조(`BASE_URL`/`API_KEY`/`CHAT_MODEL` 세 값�
 슬라이스가 사실상 같은 이벤트를 보는 가짜 중복이 많았다. 슬라이스가 하루
 이벤트의 90% 이상을 차지하면 건너뛰는 로직을 추가하고, 앱 필터·질문 표현
 변형·비교/인수인계/슬랙 프롬프트 유형까지 축을 늘려 **68개**로 재구성했다
-([eval/generate_lora_dataset.py](../eval/generate_lora_dataset.py)). held-out
+([eval/generate_lora_dataset.py](../eval/lora/generate_lora_dataset.py)). held-out
 날짜(7/26·8/3·8/4)는 전 과정에서 학습 데이터로 한 번도 쓰지 않았다.
 
 | 학습 데이터 유형 | 개수 |
@@ -93,7 +93,7 @@ OpenAI 호환 클라이언트 구조(`BASE_URL`/`API_KEY`/`CHAT_MODEL` 세 값�
 | **합계** | **68** |
 
 **held-out 평가셋**: 정리 3(전일) + 시간대 슬라이스 2 + 비교 1 + 슬랙 1 = **7개**
-([eval/generate_heldout_eval.py](../eval/generate_heldout_eval.py)). 목표
+([eval/generate_heldout_eval.py](../eval/retrieval/generate_heldout_eval.py)). 목표
 능력(정리)뿐 아니라 다른 능력이 파인튜닝으로 망가지는지(catastrophic
 forgetting)도 같이 봤다.
 
@@ -164,7 +164,7 @@ GOLD에 근접하는 수준까지 개선을 확인했다.** bf16 테스트만 �
 6시간 블록 4개로 나눠 블록마다 따로 요약(map)한 뒤 합치는(reduce) 방식 —
 `summarize_range()`가 "여러 날짜"에 이미 쓰던 패턴을 "하루 안 시간대"로 한
 단계 더 세분화한 것. `summarize.py`는 전혀 수정하지 않고
-[eval/experiment_chunked_summary.py](../eval/experiment_chunked_summary.py) 등
+[eval/experiment_chunked_summary.py](../eval/summary_chunking/experiment_chunked_summary.py) 등
 별도 실험 스크립트로만 검증했다.
 
 **v1 — 단순 이어붙이기(reduce 없음)**: 커버리지가 압도적으로 개선됐다
@@ -215,20 +215,20 @@ GOLD에 근접하는 수준까지 개선을 확인했다.** bf16 테스트만 �
 `USE_LOCAL_LLM` 환경변수 하나로 API/로컬을 즉시 전환할 수 있게 설계해뒀기
 때문에([config.py](../src/screenlog/config.py) 참고), 두 해법 중 하나를
 프로덕션에 반영하더라도 코드 변경 없이 롤백 가능하다. **아직 `summarize.py`
-자체에는 반영하지 않은 상태**(전부 `eval/` 밑 별도 실험 스크립트로만 검증) —
+자체에는 반영하지 않은 상태**(전부 `eval/*/` 밑 별도 실험 스크립트로만 검증) —
 다음 단계로 실제 적용이 남아있다.
 
 ## 부록 A: 4~5단계 관련 파일
 
 | 파일 | 역할 |
 |---|---|
-| [eval/generate_lora_dataset.py](../eval/generate_lora_dataset.py) | LoRA 학습 데이터 68개 생성(정리/비교/인수인계/슬랙) |
-| [eval/generate_heldout_eval.py](../eval/generate_heldout_eval.py) | held-out 평가셋 7개 생성 |
-| [eval/eval_lora_quantized.py](../eval/eval_lora_quantized.py) | 원본(Q4_K_M) vs LoRA(Q4_K_M) held-out 비교 |
-| [eval/experiment_chunked_summary.py](../eval/experiment_chunked_summary.py) | 시간대 분할(map) 커버리지 실험 |
-| [eval/experiment_chunked_downstream.py](../eval/experiment_chunked_downstream.py) | 분할 요약을 비교/인수인계/슬랙에 넣었을 때 영향 확인 |
-| [eval/experiment_chunked_reduce.py](../eval/experiment_chunked_reduce.py) | LLM reduce 추가 시도(실패 확인용) |
-| [eval/experiment_chunked_retry.py](../eval/experiment_chunked_retry.py) | 오염 블록만 재시도하는 최종 버전 |
+| [eval/generate_lora_dataset.py](../eval/lora/generate_lora_dataset.py) | LoRA 학습 데이터 68개 생성(정리/비교/인수인계/슬랙) |
+| [eval/generate_heldout_eval.py](../eval/retrieval/generate_heldout_eval.py) | held-out 평가셋 7개 생성 |
+| [eval/eval_lora_quantized.py](../eval/lora/eval_lora_quantized.py) | 원본(Q4_K_M) vs LoRA(Q4_K_M) held-out 비교 |
+| [eval/experiment_chunked_summary.py](../eval/summary_chunking/experiment_chunked_summary.py) | 시간대 분할(map) 커버리지 실험 |
+| [eval/experiment_chunked_downstream.py](../eval/summary_chunking/experiment_chunked_downstream.py) | 분할 요약을 비교/인수인계/슬랙에 넣었을 때 영향 확인 |
+| [eval/experiment_chunked_reduce.py](../eval/summary_chunking/experiment_chunked_reduce.py) | LLM reduce 추가 시도(실패 확인용) |
+| [eval/experiment_chunked_retry.py](../eval/summary_chunking/experiment_chunked_retry.py) | 오염 블록만 재시도하는 최종 버전 |
 
 LoRA 어댑터/학습 노트북(Colab, `transformers.Trainer` 직접 구현,
 `TailLossTrainer` 포함)은 리포지토리 밖(로컬 다운로드 폴더 및 Colab)에

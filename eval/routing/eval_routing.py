@@ -12,7 +12,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # run_eval.py를 같은 폴더에서 import
 
 from run_eval import resolve_expect_date            # noqa: E402

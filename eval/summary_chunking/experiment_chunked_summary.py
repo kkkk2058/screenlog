@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from screenlog.summarize import DAY_SUMMARY_PROMPT, browse, _format_events, _thin_out, _call_llm
 from screenlog.source import weekday_ko
