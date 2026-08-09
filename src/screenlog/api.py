@@ -28,13 +28,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from screenlog import chat_history, slack_client, summary_cache
 from screenlog.config import (
     AI_APPS,
+    EMBED_DIM,
     HISTORY_TURNS,
+    INGEST_MAX_BATCH,
     SCREENLOG_PASSWORD,
     SCREENLOG_USER,
     SLACK_BOT_TOKEN,
     SLACK_DEFAULT_CHANNEL,
     USE_LANGGRAPH,
 )
+from screenlog.index import get_collection
 from screenlog.source import weekday_ko
 from screenlog.stats import build_stats, build_timeline
 from screenlog.summarize import summarize_day
@@ -43,15 +46,11 @@ from fastapi.responses import StreamingResponse
 
 # ask_auto/stream_ask_auto 구현을 USE_LANGGRAPH 환경변수로 고른다. 셋 다
 # 시그니처와 반환/이벤트 형태가 동일해서(screenlog_langgraph/graph.py 참고)
-# 아래 라우트 코드는 어느 쪽이 켜져 있든 손댈 필요가 없다 — A/B든 롤백이든
-# 이 한 줄의 분기로 끝난다.
-#
+
 # screenlog_langgraph.graph(고정 경로만) 대신 screenlog_langgraph.agent를
 # 쓴다 — agent.py는 고정 경로일 땐 graph.py를 그대로 호출하므로(내부
 # _fixed_node) graph.py가 하던 일을 전부 포함하는 상위 호환이고, 그 위에
 # route()가 4갈래로 못 답하는 복합 질문(인수인계 문서 등)을 처리하는
-# 에이전트 루프가 추가로 있다. graph.py를 계속 쓰면 이 에이전트 경로
-# 자체가 실제 서비스에서 한 번도 안 불린다.
 if USE_LANGGRAPH:
     from screenlog_langgraph.agent import ask_auto, stream_ask_auto
 else:
@@ -84,7 +83,7 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
             except (ValueError, UnicodeDecodeError):
                 user, password = "", ""
             # secrets.compare_digest로 타이밍 공격을 막는다 — user/password
-            # 비교를 ==로 하면 앞글자가 맞을수록 응답이 미세하게 느려져서
+            # 비교를 == 로 하면 앞글자가 맞을수록 응답이 미세하게 느려져서
             # 문자 단위로 비밀번호를 추측당할 수 있다.
             if secrets.compare_digest(user, SCREENLOG_USER) and secrets.compare_digest(password, SCREENLOG_PASSWORD):
                 return await call_next(request)
@@ -102,8 +101,6 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # 팀원용 녹화 프로그램(.dmg) 배포 페이지. 여기서 받아야 실제 브라우저
 # 다운로드로 격리(quarantine) 속성이 붙어서, Gatekeeper 경고까지 포함한
-# 진짜 최초 설치 경험을 그대로 재현한다.
-
 
 DOWNLOAD_DIR = Path(__file__).parent.parent.parent / "distribution" / "mac"
 if DOWNLOAD_DIR.exists():
@@ -123,6 +120,28 @@ class AskRequest(BaseModel):
 class SlackSendRequest(BaseModel):
     text: str
     channel: str | None = None   # None이면 SLACK_DEFAULT_CHANNEL을 쓴다
+
+
+class IngestEvent(BaseModel):
+    """맥 앱이 로컬에서 이벤트화·임베딩까지 마치고 보내는 한 건.
+
+    id는 클라이언트가 정한다 — screenlog.index.event_id()가 내용
+    (app|window|start|text)으로 만든 해시라, 같은 이벤트는 몇 번을 보내도
+    같은 id가 나온다. 그래서 이 엔드포인트는 자연스럽게 멱등이다(재전송해도
+    중복이 쌓이지 않고 덮어쓰기만 된다).
+    """
+    id: str
+    text: str
+    embedding: list[float]
+    metadata: dict
+
+
+class IngestRequest(BaseModel):
+    events: list[IngestEvent]
+
+
+class KnownIdsRequest(BaseModel):
+    ids: list[str]
 
 
 @app.get("/")
@@ -152,12 +171,12 @@ def api_timeline(date: str):
     return build_timeline(date)
 
 
-# 오늘 날짜는 summary_cache가 원래 캐시 대상이 아니다(하루 종일 자라니까).
+# 오늘 날짜는 summary_cache가 원래 캐시 대상이 아니다.
 # 그래서 /api/digest를 부를 때마다 오늘 몫만 매번 LLM을 새로 불러 4초 가까이
-# 걸렸다 — 새로고침할 때마다 "데이터를 다시 로딩하는 것처럼" 느려지던 원인이
-# 이거다. 디스크(summary_cache.sqlite)에는 안 넣고 이 프로세스 메모리에만
-# 짧게(3분) 붙잡아둔다 — 오후 활동이 반영되기까지 최대 3분 지연되는 정도의
-# 트레이드오프로 새로고침 지옥을 없앤다.
+# 걸렸다 — 새로고침할 때마다 "데이터를 다시 로딩하는 것처럼" 느려지던 원인이다.
+# 디스크(summary_cache.sqlite)에는 안 넣고 이 프로세스 메모리에만
+# 짧게(3분) 붙잡아둔다 — 오후 활동이 반영되기까지 최대 3분 지연되는 정도의 트레이드오프로 새로고침 병목을 없앤다.
+
 _TODAY_DIGEST_TTL = 180
 _today_digest_cache = {}   # {date: (계산 시각, 텍스트)} — 자정 넘어가면 통째로 버린다
 
@@ -297,6 +316,68 @@ def api_conversations():
 def api_conversation_messages(conversation_id: str):
     """그 대화를 다시 열었을 때 채팅창에 재생할 메시지 전체."""
     return {"messages": chat_history.get_messages(conversation_id)}
+
+
+@app.post("/api/ingest/known")
+def api_ingest_known(req: KnownIdsRequest):
+    """이 id들 중 이미 서버에 있는 것만 돌려준다.
+
+    클라이언트가 임베딩을 시작하기 전에 먼저 물어보는 용도다. 임베딩이
+    이 파이프라인에서 제일 비싼 단계(하루치가 수 분)라, 이미 서버에 있는
+    이벤트까지 매번 다시 계산하면 동기화를 두 번째 돌릴 때부터 통째로
+    낭비가 된다. 예전엔 클라이언트가 로컬 chroma를 들고 있어서 자기
+    자신에게 물어볼 수 있었지만, 이제 진실의 원본은 서버 쪽 하나뿐이다."""
+    if not req.ids:
+        return {"known": []}
+    if len(req.ids) > INGEST_MAX_BATCH * 10:
+        raise HTTPException(status_code=413, detail=f"id는 한 번에 {INGEST_MAX_BATCH * 10}개까지입니다.")
+    col = get_collection()
+    if col.count() == 0:
+        return {"known": []}
+    return {"known": col.get(ids=req.ids, include=[])["ids"]}
+
+
+@app.post("/api/ingest")
+def api_ingest(req: IngestRequest):
+    """맥 앱이 로컬에서 만든 벡터를 받아 chroma에 넣는다.
+
+    예전 방식은 rsync로 chroma/ 디렉토리를 통째로 덮어쓴 뒤 SSH로 컨테이너를
+    재시작하는 것이었다. 그건 (1) 배포되는 앱마다 EC2 개인키가 있어야 하고,
+    (2) 디렉토리를 통째로 덮으니 팀원 두 명이 동기화하면 나중 사람이 앞사람
+    데이터를 지우고, (3) 재시작하는 동안 다른 사람이 서비스를 못 쓴다.
+    여기로 넣으면 서버가 자기 컬렉션에 직접 upsert하므로 셋 다 없어진다 —
+    프로세스가 캐싱해둔 컬렉션 객체(get_collection())에 그대로 쓰는 것이라
+    재시작 없이도 다음 질문부터 바로 검색된다.
+
+    인증은 BasicAuthMiddleware가 이미 걸어둔다(공개 경로는 "/"와
+    /static, /download뿐).
+    """
+    if not req.events:
+        return {"upserted": 0}
+    if len(req.events) > INGEST_MAX_BATCH:
+        raise HTTPException(status_code=413,
+                            detail=f"한 번에 {INGEST_MAX_BATCH}건까지 보낼 수 있습니다.")
+
+    # 차원을 여기서 막는다. 잘못된 차원이 한 번 들어가면 그 뒤로 검색이
+    # 깨지는데, 그 시점엔 어느 게 잘못 들어간 건지 구분할 방법이 없다.
+    wrong = next((e.id for e in req.events if len(e.embedding) != EMBED_DIM), None)
+    if wrong is not None:
+        raise HTTPException(status_code=422,
+                            detail=f"임베딩 차원이 {EMBED_DIM}이 아닙니다 (id={wrong}). "
+                                   "클라이언트와 서버의 임베딩 모델이 다릅니다.")
+
+    # chroma는 한 요청 안에 같은 id가 두 번 있으면 통째로 거부한다.
+    # 클라이언트가 걸렀더라도 여기서 한 번 더 접는다 — 뒤에 온 걸 남긴다.
+    unique = {e.id: e for e in req.events}
+    events = list(unique.values())
+
+    get_collection().upsert(
+        ids=[e.id for e in events],
+        embeddings=[e.embedding for e in events],
+        documents=[e.text for e in events],
+        metadatas=[e.metadata for e in events],
+    )
+    return {"upserted": len(events), "skipped_duplicates": len(req.events) - len(events)}
 
 
 @app.post("/api/slack/send")

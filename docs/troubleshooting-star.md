@@ -172,7 +172,7 @@ MPS 메모리가 터졌고, `EMBED_BATCH_SIZE=4`로 낮춘 대가가 이 소요 
 `router.py`에 hybrid 라우팅(규칙 우선, 실패 시 LLM 폴백)을 추가한 뒤, "LLM 호출이
 너무 잦아지는 거 아니냐"는 우려가 있었다. 실제 빈도를 확인하려고 `router.py`에
 카운터(`get_stats()`)를 추가하고, 사전에 없는 표현 3개(q16~q18: "화상회의 앱",
-"파일 관리자", "쉘")를 질문 세트에 넣어 `eval/eval_routing.py`로 라우팅만
+"파일 관리자", "쉘")를 질문 세트에 넣어 `eval/routing/eval_routing.py`로 라우팅만
 (생성 없이) 18문항을 돌렸다.
 
 **Task**
@@ -1252,3 +1252,147 @@ def get_model():
 > 파일 안에서 동시에 재현된 사례다. 버그를 고칠 때는 "이 파일에 같은
 > 패턴을 쓰는 다른 함수가 더 있는가"를 grep 한 번으로 확인하는 게,
 > 나중에 똑같은 사고를 다시 겪는 것보다 훨씬 싸다.
+
+---
+
+## 24. optional-dependency가 빠진 채로 서버가 아예 안 뜨던 문제
+
+**Situation**
+로컬에서 앱을 띄우려 하자 import 단계에서 바로 죽었다.
+```
+File "/Users/sehoonkim/screenlog/src/screenlog/api.py", line 52
+    from screenlog_langgraph.agent import ask_auto, stream_ask_auto
+File "/Users/sehoonkim/screenlog/src/screenlog_langgraph/graph.py", line 20
+    from langgraph.config import get_stream_writer
+ModuleNotFoundError: No module named 'langgraph'
+```
+
+**Task**
+코드는 그대로인데 왜 갑자기 없는 모듈을 부르는지 확인해야 했다.
+
+**Action**
+- `.env`에 `USE_LANGGRAPH=true`가 있었다. `api.py`는 이 값을 보고
+  `screenlog_langgraph.agent`를 import한다 — 즉 이 스위치가 켜져 있으면
+  langgraph는 optional이 아니라 **필수**다.
+- 그런데 `uv sync`를 그냥 돌리면 `[project.optional-dependencies]`는
+  설치하지 않는다. 오히려 이미 깔려 있던 걸 **제거한다**:
+  ```
+  Uninstalled 19 packages: langgraph, langchain-core, langchain-openai,
+  rank-bm25, kiwipiepy, tiktoken, ...
+  ```
+- 즉 "의존성을 맞추려고" 실행한 명령이 실행에 필요한 걸 지운 것이다.
+
+**Result**
+```bash
+uv sync --extra langgraph --extra langgraph-agent --extra langchain --extra bm25
+```
+로 복구했고, 서버를 띄워 `/api/stats`·`/api/timeline`·`/api/digest`·
+`/api/ask/stream`까지 정상 응답을 확인했다.
+
+> `USE_LANGGRAPH` 같은 런타임 스위치는 **의존성 그래프를 바꾼다**. 코드상
+> optional로 선언돼 있어도, 환경변수가 켜져 있으면 그 순간 필수가 된다.
+> 두 사실(`pyproject.toml`의 extra 선언, `.env`의 스위치)이 서로 다른
+> 파일에 있어서 어느 쪽만 봐서는 "이 환경에 뭐가 필요한지" 알 수 없다 —
+> 19번 항목("같은 사실이 여러 곳에 흩어져 있다")과 같은 구조다.
+
+---
+
+## 25. py2app이 torch를 분석하다 `RecursionError`로 빌드가 통째로 죽던 문제
+
+**Situation**
+맥 앱 번들에 임베딩 의존성을 넣고 빌드하자, 앱이 만들어지기도 전에
+스택트레이스만 수천 줄 쏟아내고 끝났다.
+```
+File ".../ast.py", line 506, in visit
+    return visitor(node)
+File ".../ast.py", line 516, in generic_visit
+    self.visit(value)
+RecursionError: maximum recursion depth exceeded
+```
+`dist/`는 생성조차 되지 않았다.
+
+**Task**
+torch를 번들에 넣는 게 애초에 불가능한 건지, 아니면 우회 가능한 건지
+가려야 했다. 불가능하다면 "별도 venv를 넣고 subprocess로 띄우는" 방식으로
+설계를 바꿔야 했다.
+
+**Action**
+- 스택트레이스가 전부 `ast.visit` / `generic_visit`의 상호 재귀였다.
+  py2app은 번들에 넣을 모듈을 찾으려고 대상 패키지의 소스를 전부 AST로
+  훑는데(modulegraph), torch에는 그 방식으로는 너무 깊게 중첩된 표현식이
+  있다.
+- 중요한 건 **무한 재귀가 아니라 그냥 깊은 재귀**라는 점이다. 무한이면
+  한도를 올려도 다시 터지지만, 깊기만 한 거라면 한도만 올리면 끝난다.
+- `setup.py` 맨 위에 한도를 올렸다.
+  ```python
+  sys.setrecursionlimit(10_000)
+  ```
+
+**Result**
+빌드가 분석 단계를 통과해 끝까지 진행됐다(`Done!`). 설계를 바꿀 필요가
+없었다. 번들된 파이썬으로 직접 검증까지 했다.
+```
+IMPORT_OK
+model_is_ready: True
+EMBED_OK dim= 1024
+```
+
+> "라이브러리 A를 도구 B로 묶을 수 없다"는 결론을 내리기 전에, 실패가
+> **구조적인 것인지 설정값 문제인지** 먼저 봐야 했다. 여기서는 스택트레이스
+> 전체가 같은 두 함수의 반복이었다는 점이 "무한이 아니라 깊은 것"이라는
+> 판단 근거였고, 그 판단 하나로 한 줄 수정과 설계 변경이 갈렸다.
+
+---
+
+## 26. 모델 다운로드 진행률이 4,635,026,345%로 표시되던 문제
+
+**Situation**
+맥 앱이 첫 실행에 임베딩 모델(2.1GB)을 받는 동안 진행률을 보여주려고
+`huggingface_hub`의 tqdm을 가로챘는데, 값이 터무니없이 나왔다.
+```
+최종: 927,005,269/20 bytes = 4635026345%
+```
+
+**Task**
+사용자가 몇 분을 기다리는 화면이라, 진행률이 틀리면 안 보여주느니만
+못하다. 분모가 왜 `20`인지부터 봐야 했다.
+
+**Action**
+- `20`은 바이트가 아니라 **파일 개수**였다. `huggingface_hub`은
+  "Fetching 20 files" 같은 개수 막대와 파일별 바이트 막대를 **같은 tqdm으로**
+  만든다. 둘을 구분 없이 더하니 개수와 바이트가 한 숫자에 섞였다.
+- `unit == "B"`인 막대만 세도록 걸렀더니 이번엔 **193.9%**가 나왔다.
+  ```
+  최종 진행률: 927,005,249 / 478,191,585 bytes = 193.9%
+  ```
+  정확히 2배 — 같은 다운로드를 "전체 바이트" 막대와 "파일별 바이트" 막대가
+  각각 세고 있었다. 어느 쪽이 집계용인지는 라이브러리 버전에 따라 달라서
+  걸러내는 방식 자체가 불안정했다.
+- tqdm을 포기하고 **캐시 폴더가 커지는 걸 직접 재는** 방식으로 바꿨다.
+  표시 방식과 무관하게 항상 맞기 때문이다. 그런데 이번엔 진행률이 1%에
+  멈춰 있다가 끝나는 순간 100%로 튀었다.
+  ```
+  진행률 추이: ['1%','1%','1%','1%','1%','1%', ... , '100%']
+  ```
+- 원인은 `hf-xet`이었다. 설치돼 있으면(기본값) 큰 파일이 `blobs/`에
+  `.incomplete`로 자라지 않고 xet 자체 경로로 간다. `HF_HUB_DISABLE_XET=1`로
+  꺼보니 진행률이 정상적으로 세분화됐다.
+  ```
+  ['0%','1%','12%','24%','35%','47%','58%','69%','81%','92%','100%']
+  ```
+
+**Result**
+진행률이 필요한 호출에서만 xet을 끄고, 끝나면 원래 값으로 되돌린다.
+서버처럼 진행률이 필요 없는 호출은 xet을 그대로 쓴다(그쪽이 빠르다).
+분모는 다운로드 시작 **전에** 저장소 메타데이터로 확정한다 — 막대가 하나씩
+생기는 걸 보고 누적하면 초반에 총량이 계속 커져서 진행률이 앞뒤로 널뛴다.
+
+검증: 단조 증가 True, 100% 초과 없음 True, 완료 후 xet 설정 원복 True.
+
+> 진행률처럼 "부수적인 표시"를 남의 라이브러리 내부 표현(tqdm 인스턴스)에
+> 기대어 구현하면, 그 표현이 바뀔 때마다 조용히 틀린 값을 보여준다.
+> 여기서는 **관측 가능한 사실(폴더 크기)** 을 직접 재는 쪽으로 옮겨서
+> 라이브러리 버전에 의존하지 않게 만들었다. 다만 그 대가로 xet이라는
+> 다른 구현 세부사항에 걸렸고, 결국 "진행률을 정확히 보여주는 것"과
+> "가장 빠른 다운로드 경로를 쓰는 것"을 맞바꿨다 — 2GB를 기다리는
+> 화면에서는 전자가 낫다고 판단했다.

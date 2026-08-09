@@ -9,8 +9,8 @@ import sqlite3
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
-import chromadb
 import torch
 from sentence_transformers import SentenceTransformer
 
@@ -23,6 +23,158 @@ from screenlog.config import (
     INDEX_CHECKPOINT_SIZE,
 )
 from screenlog.source import TZ_MODIFIER, available_dates, load_frames, to_local
+
+# 저장소에 있지만 우리가 안 쓰는 것들. bge-m3 저장소를 통째로 받으면 4GB가
+# 넘는데, sentence-transformers 경로에 실제로 필요한 건 가중치 하나와
+# 토크나이저뿐이다:
+#   onnx/       onnxruntime용 사본(model.onnx_data만 2GB대) — 우리는 torch로 돈다
+#   imgs/,*.jpg README에 박힌 벤치마크 그림
+#   *_linear.pt FlagEmbedding의 colbert/sparse 헤드 — dense 임베딩만 쓰는 우리와 무관
+# 맥 앱은 이걸 첫 실행 때 사용자 회선으로 받으므로, 안 쓰는 2GB를 받게
+# 두면 첫 동기화까지의 대기가 그냥 두 배가 된다.
+MODEL_IGNORE_PATTERNS = ["onnx/*", "imgs/*", "*.jpg", "*.webp", "*_linear.pt", ".gitattributes"]
+
+
+def model_is_ready() -> bool:
+    """모델 가중치가 이미 로컬 캐시에 있으면 True.
+
+    앱이 "모델 받는 중(수 분)"과 "이미 있는 걸 메모리에 올리는 중(수 초)"을
+    구분해서 보여주려면 로딩을 시작하기 전에 알아야 한다 — 둘 다 겉으론
+    그냥 멈춰 있는 것처럼 보이는데 기다려야 하는 시간이 자릿수로 다르다."""
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    try:
+        snapshot_download(EMBEDDING_MODEL, local_files_only=True,
+                          ignore_patterns=MODEL_IGNORE_PATTERNS)
+        return True
+    except (LocalEntryNotFoundError, OSError, ValueError):
+        return False
+
+
+def _wanted_model_file(name: str) -> bool:
+    from fnmatch import fnmatch
+    return not any(fnmatch(name, pattern) for pattern in MODEL_IGNORE_PATTERNS)
+
+
+def model_download_size() -> int:
+    """받아야 할 총 바이트. 앱이 "2.1GB 받습니다"를 미리 보여주는 용도.
+
+    진행률의 분모로도 쓴다. 다운로드가 시작된 뒤에 막대들이 하나씩 생기는
+    걸 보고 분모를 누적하면, 초반에 총량이 계속 커져서 진행률이 앞뒤로
+    널뛴다 — 시작 전에 저장소 메타데이터로 총량을 확정해두면 그 문제가
+    없다."""
+    from huggingface_hub import HfApi
+    info = HfApi().model_info(EMBEDDING_MODEL, files_metadata=True)
+    return sum(s.size or 0 for s in info.siblings if _wanted_model_file(s.rfilename))
+
+
+def ensure_model(on_progress=None):
+    """모델이 없으면 받는다. 이미 있으면 아무것도 안 한다.
+
+    맥 앱(.dmg)은 이 2GB짜리 가중치를 번들에 넣지 않고 첫 실행 때 받는다.
+    번들에 넣으면 dmg가 2.8GB가 되는데, 그러면 애플 공증에 올리는 것부터
+    앱을 한 줄 고쳐 재배포할 때마다 사용자가 전부 다시 받는 것까지 전
+    과정이 무거워진다 — 내장된 녹화기(screenpipe)가 whisper 모델을 첫
+    실행에 받는 것과 같은 이유다.
+
+    on_progress(받은 바이트, 전체 바이트)를 주면 진행률을 흘려보낸다.
+    중간에 끊겨도 huggingface_hub가 이어받기를 처리하므로, 다시 부르면
+    받다 만 지점부터 계속된다.
+    """
+    from huggingface_hub import snapshot_download
+
+    if model_is_ready():
+        return
+
+    def download():
+        snapshot_download(EMBEDDING_MODEL, ignore_patterns=MODEL_IGNORE_PATTERNS)
+
+    if on_progress is None:
+        download()
+        return
+
+    # 진행률을 보여줘야 할 때만 hf-xet 경로를 끈다. xet은 큰 파일을 blobs/에
+    # .incomplete로 키우지 않고 자기 방식으로 받아서, 폴더 크기로는 2GB를
+    # 받는 내내 1%에 멈춰 있다가 끝나는 순간 100%로 튄다(실측). 사용자가
+    # 첫 실행에 몇 분을 기다리는 화면이라 "멈춘 것처럼 보이지 않는 것"이
+    # xet의 속도 이득보다 중요하다. 진행률이 필요 없는 호출(서버 등)은
+    # 위에서 이미 반환했으므로 xet을 그대로 쓴다.
+    from huggingface_hub import constants
+    xet_was_disabled = constants.HF_HUB_DISABLE_XET
+    constants.HF_HUB_DISABLE_XET = True
+    try:
+        _download_with_progress(download, on_progress)
+    finally:
+        constants.HF_HUB_DISABLE_XET = xet_was_disabled
+
+
+def _download_with_progress(download, on_progress):
+    """download()를 스레드로 돌리면서 캐시 폴더가 커지는 걸 1초마다 보고한다.
+
+    huggingface_hub의 tqdm을 가로채는 방법도 있지만, 같은 다운로드를 "전체
+    바이트" 막대와 "파일별 바이트" 막대로 두 번 세서 진행률이 194%까지
+    갔다(실측). 어느 막대가 집계용인지는 라이브러리 버전에 따라 달라서
+    걸러내기도 불안정하다 — 폴더 크기는 표시 방식과 무관하게 항상 맞다.
+    """
+    try:
+        total = model_download_size()
+    except Exception:
+        total = 0   # 메타데이터를 못 받아도 다운로드 자체는 되어야 한다
+
+    done_event = threading.Event()
+    error = []
+    # xet 스테이징은 저장소들이 공유하고 다운로드가 끝나도 남는다. 시작
+    # 시점을 빼야 "이번에 받은 양"이 된다.
+    xet_baseline = _dir_size(_xet_cache_dir())
+
+    def run():
+        try:
+            download()
+        except BaseException as e:   # noqa: BLE001 — 아래에서 그대로 다시 올린다
+            error.append(e)
+        finally:
+            done_event.set()
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    while not done_event.wait(1.0):
+        try:
+            on_progress(min(_downloaded_bytes(xet_baseline), total) if total else 0, total)
+        except Exception:
+            pass   # 진행률 표시가 실패해도 다운로드 자체는 계속돼야 한다
+    worker.join()
+    if error:
+        raise error[0]
+    on_progress(total, total)
+
+
+def _dir_size(path: Path) -> int:
+    if not path or not path.exists():
+        return 0
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+def _xet_cache_dir():
+    """hf-xet이 받는 중인 조각을 쌓아두는 곳.
+
+    hf-xet이 깔려 있으면(기본값) 큰 파일은 blobs/에 .incomplete로 자라지
+    않고 여기로 먼저 간다. 그래서 blobs만 재면 2GB를 받는 내내 1%에
+    멈춰 있다가 끝나는 순간 100%로 튄다(실측)."""
+    from huggingface_hub import constants
+    path = getattr(constants, "HF_XET_CACHE", None)
+    return Path(path) if path else None
+
+
+def _downloaded_bytes(xet_baseline: int) -> int:
+    """지금까지 받은 바이트(대략). blobs에 안착한 것 + xet이 받아둔 조각."""
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    repo_dir = Path(HF_HUB_CACHE) / f"models--{EMBEDDING_MODEL.replace('/', '--')}"
+    # blobs/만 센다. snapshots/는 blobs로 향하는 심볼릭 링크라 같이 세면 두 배가 된다.
+    blobs = _dir_size(repo_dir / "blobs")
+    xet = max(0, _dir_size(_xet_cache_dir()) - xet_baseline)
+    return blobs + xet
+
 
 _model = None
 _model_lock = threading.Lock()
@@ -72,7 +224,14 @@ def get_collection():
     경로 등) 여러 스레드가 _collection이 아직 None인 순간에 동시에 들어올 수
     있다. 그러면 PersistentClient()가 같은 프로세스에서 두 번 겹쳐 생성돼
     chromadb의 프로세스 전역 SharedSystemClient가 깨진다(실측: "Could not
-    connect to tenant default_tenant" 에러). 락으로 최초 생성 구간만 직렬화한다."""
+    connect to tenant default_tenant" 에러). 락으로 최초 생성 구간만 직렬화한다.
+
+    chromadb를 모듈 최상단이 아니라 여기서 부르는 이유: 맥 앱은 벡터를
+    만들어 HTTP로 서버에 올릴 뿐 로컬에 chroma를 두지 않는다(sync.py 참고).
+    최상단에서 부르면 앱 번들에 chromadb와 그 의존성(onnxruntime 등)이
+    통째로 딸려 들어간다."""
+    import chromadb
+
     global _collection
     if _collection is not None:
         return _collection

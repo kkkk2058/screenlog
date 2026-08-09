@@ -12,6 +12,7 @@
 """
 
 import datetime
+import json
 import os
 import signal
 import sqlite3
@@ -55,14 +56,36 @@ def ensure_accessibility_permission():
     options = {"AXTrustedCheckOptionPrompt": True}
     AXIsProcessTrustedWithOptions(options)
 
-# 동기화(색인 + EC2 전송) 대상. 팀원 배포판에서는 이 값들을 설정 파일로
-# 빼야 하지만, 지금은 개인 사용 기준으로 고정값을 쓴다.
-SCREENLOG_DIR = Path.home() / "screenlog"
-EC2_HOST = "54.116.52.38"
-EC2_USER = "ubuntu"
-EC2_KEY = Path.home() / "Downloads/EXPRESS-BEC.pem"
-DASHBOARD_URL = "http://54.116.52.38:8000"
-UV_BIN = Path.home() / ".local/bin/uv"
+# 동기화 설정. 예전엔 여기에 EC2 주소·SSH 개인키 경로·~/screenlog 저장소
+# 경로·uv 실행파일 경로가 상수로 박혀 있었다. 그건 개발자 본인 맥에서만
+# 성립하는 값들이라, dmg만 받은 사람은 "SCREENLOG_DIR 없음"으로 바로
+# 실패했다. 이제 앱은 자기 안에 screenlog 패키지를 들고 있고, 서버로는
+# HTTP로 올린다(SSH 개인키를 배포할 방법이 없다).
+DEFAULT_SERVER_URL = "http://3.35.7.225:8000"
+CONFIG_PATH = DATA_DIR / "config.json"
+
+
+def load_config() -> dict:
+    """서버 주소와 계정. 사용자가 메뉴에서 입력한 값이 여기 남는다."""
+    if not CONFIG_PATH.exists():
+        return {}
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_config(config: dict):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    # 비밀번호가 들어 있으니 남이 읽지 못하게 한다.
+    CONFIG_PATH.chmod(0o600)
+
+
+def server_url() -> str:
+    return load_config().get("server_url") or DEFAULT_SERVER_URL
 
 
 def resource_path(name: str) -> Path:
@@ -143,15 +166,10 @@ RECORDER_ENV = {
     "LC_ALL": "en_US.UTF-8",
 }
 
-# py2app으로 얼린 이 앱 자신의 PYTHONHOME/PYTHONPATH가 os.environ에 박혀
-# 있어서, RECORDER_ENV를 그대로 물려주면 `uv run python`으로 띄운 색인
-# 프로세스가 이 앱 내부의 제한된 파이썬 표준 라이브러리를 잘못 참조해서
-# 죽는다(실측: ModuleNotFoundError: zoneinfo). uv/색인/rsync처럼 이 앱과
-# 무관한 별도 파이썬 프로세스를 띄울 땐 이 오염된 변수를 빼고 넘긴다.
-SYNC_ENV = {
-    k: v for k, v in RECORDER_ENV.items()
-    if k not in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "RESOURCEPATH")
-}
+# (예전엔 여기 SYNC_ENV가 있었다 — `uv run python -m screenlog.index`로
+# 띄우던 별도 색인 프로세스가 이 앱의 PYTHONHOME/PYTHONPATH를 물려받아
+# 죽는 걸 막는 용도였다. 이제 색인을 같은 프로세스 안에서 직접 부르므로
+# 물려줄 환경 자체가 없어져서 지웠다.)
 
 
 def human_size(num_bytes: int) -> str:
@@ -202,6 +220,7 @@ class ScreenlogMenuBar(rumps.App):
         self.redaction_item = rumps.MenuItem("리덕션: -")
         self.toggle_item = rumps.MenuItem("시작/중지", callback=self.toggle_recording)
         self.sync_item = rumps.MenuItem("지금 동기화 (색인 + 서버 전송)", callback=self.sync_now)
+        self.settings_item = rumps.MenuItem("서버 설정", callback=self.edit_settings)
         self.dashboard_item = rumps.MenuItem("웹 대시보드 열기", callback=self.open_dashboard)
         self.log_item = rumps.MenuItem("동기화 로그 보기", callback=self.open_log)
         self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
@@ -215,6 +234,7 @@ class ScreenlogMenuBar(rumps.App):
             self.redaction_item,
             None,
             self.sync_item,
+            self.settings_item,
             self.log_item,
             self.dashboard_item,
             None,
@@ -292,99 +312,92 @@ class ScreenlogMenuBar(rumps.App):
 
     def _sync_worker(self):
         try:
-            if not SCREENLOG_DIR.exists():
-                log(f"실패: SCREENLOG_DIR 없음 ({SCREENLOG_DIR})")
-                rumps.notification("Screenlog", "동기화 실패", f"{SCREENLOG_DIR} 없음")
-                return
-            if not UV_BIN.exists():
-                log(f"실패: uv 실행파일 없음 ({UV_BIN})")
-                rumps.notification("Screenlog", "동기화 실패", f"uv 없음: {UV_BIN}")
+            config = load_config()
+            if not (config.get("user") and config.get("password")):
+                log("실패: 서버 계정 미설정")
+                rumps.notification("Screenlog", "서버 설정 필요",
+                                    "메뉴의 '서버 설정'에서 아이디/비밀번호를 입력하세요.")
                 return
 
-            rumps.notification("Screenlog", "동기화 시작", "색인 중... (몇 분 걸릴 수 있음)")
+            # screenlog는 설정을 import 시점에 환경변수로 읽는다. 그래서
+            # 반드시 import보다 먼저 채워야 한다 — 순서가 바뀌면 사용자가
+            # 방금 입력한 계정 대신 빈 값이 박힌 채로 굳는다.
+            os.environ["SCREENLOG_ROLE"] = "client"
+            os.environ["SCREENLOG_SERVER_URL"] = config.get("server_url") or DEFAULT_SERVER_URL
+            os.environ["SCREENLOG_USER"] = config["user"]
+            os.environ["SCREENLOG_PASSWORD"] = config["password"]
+            os.environ["SCREENLOG_DATA_DIR"] = str(DATA_DIR / "screenlog")
 
-            index_cmd = [str(UV_BIN), "run", "python", "-m", "screenlog.index"]
-            log(f"색인 시작: {' '.join(index_cmd)} (cwd={SCREENLOG_DIR})")
+            from screenlog.index import model_is_ready
+            from screenlog.sync import SyncError, sync_all
+
+            if not model_is_ready():
+                rumps.notification("Screenlog", "첫 실행 준비",
+                                    "검색용 모델(약 2GB)을 내려받습니다. 한 번만 받으면 됩니다.")
+
+            def on_model_progress(done, total):
+                percent = (done / total * 100) if total else 0
+                self.sync_item.title = f"모델 내려받는 중... {percent:.0f}% ({human_size(done)})"
+
+            def on_status(message):
+                self.sync_item.title = f"동기화 중... {message}"
+                log(message)
+
+            log(f"동기화 시작 (서버={os.environ['SCREENLOG_SERVER_URL']})")
+            rumps.notification("Screenlog", "동기화 시작", "기록을 정리해 서버로 올립니다.")
+
             try:
-                result = subprocess.run(
-                    index_cmd, cwd=str(SCREENLOG_DIR), env=SYNC_ENV,
-                    capture_output=True, text=True, encoding="utf-8", errors="replace",
-                )
-            except FileNotFoundError as e:
-                log(f"색인 실패(명령어 못 찾음): {e}")
-                rumps.notification("Screenlog", "색인 실패", f"명령어를 못 찾음: {e}")
-                return
-            if result.returncode != 0:
-                log(f"색인 실패(returncode={result.returncode}): {result.stderr[-1000:]}")
-                rumps.notification("Screenlog", "색인 실패", result.stderr[-200:] or "알 수 없는 오류")
-                return
-            log(f"색인 완료: {result.stdout[-500:]}")
-
-            # 요약 캐시는 chroma/ 안(summary_cache.sqlite)에 만들어지므로 rsync보다
-            # 먼저 돌려야 서버로 같이 넘어간다. 실패해도(게이트웨이 다운 등) 색인
-            # 결과 자체는 살려서 보내야 하므로 여기서 return하지 않고 넘어간다 —
-            # 요약이 없으면 그냥 그때그때 만드는 예전 방식으로 자동 대체된다.
-            self.sync_item.title = "동기화 중... (요약 생성)"
-            summarize_cmd = [str(UV_BIN), "run", "python", "-m", "screenlog.summarize"]
-            log(f"요약 생성 시작: {' '.join(summarize_cmd)} (cwd={SCREENLOG_DIR})")
-            try:
-                result = subprocess.run(
-                    summarize_cmd, cwd=str(SCREENLOG_DIR), env=SYNC_ENV,
-                    capture_output=True, text=True, encoding="utf-8", errors="replace",
-                )
-                if result.returncode != 0:
-                    log(f"요약 생성 실패(returncode={result.returncode}), 계속 진행: {result.stderr[-500:]}")
-                else:
-                    log(f"요약 생성 완료: {result.stdout[-500:]}")
-            except FileNotFoundError as e:
-                log(f"요약 생성 실패(명령어 못 찾음), 계속 진행: {e}")
-
-            self.sync_item.title = "동기화 중... (서버 전송)"
-            rsync_cmd = [
-                "/usr/bin/rsync", "-az", "-e", f"ssh -i {EC2_KEY}",
-                f"{SCREENLOG_DIR}/chroma/", f"{EC2_USER}@{EC2_HOST}:~/screenlog/chroma/",
-            ]
-            log(f"서버 전송 시작: {' '.join(rsync_cmd)}")
-            result = subprocess.run(
-                rsync_cmd, env=SYNC_ENV, capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-            )
-            if result.returncode != 0:
-                log(f"서버 전송 실패(returncode={result.returncode}): {result.stderr[-1000:]}")
-                rumps.notification("Screenlog", "서버 전송 실패", result.stderr[-200:] or "알 수 없는 오류")
+                uploaded, days = sync_all(on_status=on_status,
+                                           on_model_progress=on_model_progress)
+            except SyncError as e:
+                # 사용자가 고칠 수 있는 실패(계정 오류, 서버 꺼짐 등)는
+                # 문구를 그대로 보여준다.
+                log(f"동기화 실패: {e}")
+                rumps.notification("Screenlog", "동기화 실패", str(e)[:200])
                 return
 
-            # rsync는 파일만 바꿔치기한다. EC2에서 계속 떠 있는 서버 프로세스는
-            # chroma 클라이언트를 프로세스 시작 시점에 한 번 열어서 메모리에
-            # 캐싱해두므로(get_collection()), 파일이 바뀐 걸 스스로 알아채지
-            # 못한다 — 재시작 안 하면 옛 인덱스로 계속 답하다가 "Error finding
-            # id"류 에러를 낸다(실측). 그래서 전송 뒤에 컨테이너를 재시작해서
-            # 캐시를 새로 로드하게 한다.
-            self.sync_item.title = "동기화 중... (서버 재시작)"
-            restart_cmd = [
-                "ssh", "-i", str(EC2_KEY), f"{EC2_USER}@{EC2_HOST}",
-                "cd ~/screenlog && docker compose restart",
-            ]
-            log(f"서버 재시작: {' '.join(restart_cmd)}")
-            result = subprocess.run(
-                restart_cmd, env=SYNC_ENV, capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-            )
-            if result.returncode != 0:
-                log(f"서버 재시작 실패(returncode={result.returncode}): {result.stderr[-1000:]}")
-                rumps.notification("Screenlog", "서버 재시작 실패",
-                                    "데이터는 전송됐지만 서버가 옛 캐시로 답할 수 있음")
-                return
-
-            log("동기화 완료")
-            rumps.notification("Screenlog", "동기화 완료", "서버에 최신 데이터가 반영됐습니다.")
+            log(f"동기화 완료: {days}일치에서 {uploaded}건 업로드")
+            if uploaded:
+                rumps.notification("Screenlog", "동기화 완료",
+                                    f"{uploaded}건을 서버에 올렸습니다.")
+            else:
+                rumps.notification("Screenlog", "동기화 완료", "새로 올릴 기록이 없습니다.")
+        except Exception:
+            import traceback
+            tb = traceback.format_exc()
+            log(f"동기화 중 예상치 못한 오류:\n{tb}")
+            rumps.notification("Screenlog", "동기화 실패", tb.strip().splitlines()[-1][:200])
         finally:
             self.sync_item.title = "지금 동기화 (색인 + 서버 전송)"
             self.syncing = False
             self.refresh(None)
 
+    def edit_settings(self, _):
+        """서버 주소와 계정을 입력받는다.
+
+        예전엔 EC2 주소와 SSH 개인키 경로가 코드에 상수로 박혀 있어서
+        개발자 본인 맥에서만 동기화가 됐다. 배포되는 앱은 받는 사람마다
+        계정이 다르므로 값을 물어봐야 한다."""
+        config = load_config()
+        for key, label, default in (
+            ("server_url", "서버 주소", config.get("server_url") or DEFAULT_SERVER_URL),
+            ("user", "아이디", config.get("user", "")),
+            ("password", "비밀번호", config.get("password", "")),
+        ):
+            response = rumps.Window(
+                message=f"{label}을(를) 입력하세요.", title="Screenlog 서버 설정",
+                default_text=default, ok="확인", cancel="취소", dimensions=(300, 24),
+            ).run()
+            if not response.clicked:
+                return          # 취소하면 여태 입력한 것도 저장하지 않는다
+            config[key] = response.text.strip()
+
+        save_config(config)
+        log(f"서버 설정 저장됨 (서버={config.get('server_url')}, 아이디={config.get('user')})")
+        rumps.notification("Screenlog", "설정 저장됨", config.get("server_url", ""))
+
     def open_dashboard(self, _):
-        os.system(f"open {DASHBOARD_URL}")
+        os.system(f"open {server_url()}")
 
     def open_log(self, _):
         APP_LOG_PATH.touch(exist_ok=True)
