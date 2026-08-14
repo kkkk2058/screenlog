@@ -6,12 +6,23 @@
 
 **내 화면 기록에 물어보면 근거와 함께 답하는 개인용 RAG.**
 
-[![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-SSE-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![ChromaDB](https://img.shields.io/badge/ChromaDB-vector%20store-FF6B6B)](https://www.trychroma.com/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-orchestration-1C3C3C)](https://langchain-ai.github.io/langgraph/)
-[![BGE-M3](https://img.shields.io/badge/embedding-BAAI%2Fbge--m3-8A2BE2)](https://huggingface.co/BAAI/bge-m3)
-[![Docker](https://img.shields.io/badge/Docker-GHCR%20→%20EC2-2496ED?logo=docker&logoColor=white)](https://github.com/features/actions)
+**Backend**<br/>
+![Python](https://img.shields.io/badge/Python%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![uvicorn](https://img.shields.io/badge/uvicorn%20·%20SSE-2C3E50?style=for-the-badge&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite%20×3-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
+
+**AI / RAG**<br/>
+![LangGraph](https://img.shields.io/badge/LangGraph-1C3C3C?style=for-the-badge&logoColor=white)
+![ChromaDB](https://img.shields.io/badge/ChromaDB-FF6B6B?style=for-the-badge&logoColor=white)
+![BGE-M3](https://img.shields.io/badge/BAAI%2Fbge--m3-8A2BE2?style=for-the-badge&logo=huggingface&logoColor=white)
+![Ollama](https://img.shields.io/badge/Ollama%20·%20LoRA-000000?style=for-the-badge&logo=ollama&logoColor=white)
+
+**Infra**<br/>
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white)
+![GHCR](https://img.shields.io/badge/GHCR-181717?style=for-the-badge&logo=github&logoColor=white)
+![EC2](https://img.shields.io/badge/Amazon%20EC2-FF9900?style=for-the-badge&logo=amazonec2&logoColor=white)
 
 <table align="center">
 <tr>
@@ -49,12 +60,40 @@
 
 
 > 실험 원문·실패한 시도·기각한 결론까지
-> [`docs/`](docs)와 [`eval/`](eval)에 남아 있다. → [문서 지도](#문서-지도) ·
-> 설치와 실행은 맨 아래 [빠른 시작](#빠른-시작).
+> [`docs/`](docs)와 [`eval/`](eval)에 남아 있다. → [문서 지도](#docs-map) ·
+> 설치와 실행은 맨 아래 [빠른 시작](#quick-start).
 
 ---
 
-## 왜 만들었나
+## 📺 데모 영상
+
+<div align="center">
+
+[<img src="docs/images/journey.gif" width="720" alt="데모 영상 재생">](docs/video/screenlog-recap.mp4)
+
+**[▶ 2분 요약본](docs/video/screenlog-recap.mp4)** · **[▶ 전체본](docs/video/screenlog-full.mp4)**
+
+<sub>랜딩 → 설치 안내 → 탐색 → 물어보기 → 답변까지 실제 동작. 편집·가속 없음.</sub>
+
+</div>
+
+---
+
+## 목차
+
+| | |
+|---|---|
+| **소개** | [1. 왜 만들었나](#why) · [2. 무엇을 하는가](#what) |
+| **설계** | [3. 시스템 구조](#architecture) · [4. 파이프라인](#pipeline) |
+| **검증** | [5. 평가](#evaluation) · [6. 핵심 설계 결정](#decisions) · [7. 트러블슈팅](#troubleshooting) · [8. 성능](#performance) |
+| **운영** | [9. 웹 서비스와 API](#web-api) · [10. 배포](#deployment) · [11. 개인정보](#privacy) |
+| **그 외** | [12. 알려진 한계](#limitations) · [13. 문서 지도](#docs-map) · [14. 빠른 시작](#quick-start) |
+
+---
+
+<a id="why"></a>
+
+## 🎯 1. 왜 만들었나
 
 금요일마다 주간 공유를 쓸 때가 제일 막막했다. 분명 바빴는데 뭘 했는지가 기억이 안 나서,
 커밋 로그와 브라우저 히스토리를 한참 역추적하고 나서야 겨우 몇 줄을 적었다. **하루 종일
@@ -90,18 +129,12 @@
 
 ---
 
-## 무엇을 하는가
+<a id="what"></a>
 
-<div align="center">
-
-![랜딩 → 다운로드 → 탐색 → 대시보드 → 질문](docs/images/journey.gif)
-
-<sub><b>랜딩 → 설치 안내 → 탐색 → 물어보기 → 답변</b>까지 실제 동작. 편집·가속 없음.
-질문을 던지면 라우팅 결과(<code>Google Chrome에서 · 최근 7일</code>)가 먼저 뜨고 답이 토큰 단위로 흘러나온다.</sub>
-
-</div>
+## 💬 2. 무엇을 하는가
 
 평소 말투로 물어보면 **필터를 스스로 뽑아** 그 범위 안에서만 답한다.
+질문을 던지면 라우팅 결과(`Google Chrome에서 · 최근 7일`)가 먼저 뜨고 답이 토큰 단위로 흘러나온다.
 
 <table>
 <tr>
@@ -133,8 +166,51 @@
 여기에 **인수인계 문서**·**슬랙 공유 초안** 두 가지 출력 양식이 에이전트 도구로 얹혀 있다.
 슬랙은 초안까지만 만들고, 실제 전송은 사용자가 버튼을 눌러야만 도는 별도 엔드포인트다.
 
+### 기능 상세
+
+<table>
+<tr>
+<th width="50%">검색 — 근거 8개가 같이 나온다</th>
+<th width="50%">정리 — 하루를 시각순으로 복원</th>
+</tr>
+<tr>
+<td><img src="docs/images/features/search.gif" alt="검색"></td>
+<td><img src="docs/images/features/summary.gif" alt="정리"></td>
+</tr>
+<tr>
+<td><sub>라우팅 결과가 배지로 먼저 뜨고, 답 아래에 <b>캡처 시각 · 앱 · 창 제목 · 거리 점수</b>가 그대로 붙는다. 화면에서 읽힌 원문이라 OCR 노이즈까지 검증된다.</sub></td>
+<td><sub>유튜브·Notion·카카오톡·터미널이 <b>한 줄기로</b> 이어진다. 날짜별 요약을 병렬 생성해 먼저 끝난 것부터 스트리밍 — 첫 문장이 1.4초.</sub></td>
+</tr>
+
+<tr>
+<th>비교 — 날짜를 가로지르는 질문</th>
+<th>인수인계 — 같은 기록, 다른 양식</th>
+</tr>
+<tr>
+<td><img src="docs/images/features/compare.gif" alt="비교"></td>
+<td><img src="docs/images/features/handover.gif" alt="인수인계"></td>
+</tr>
+<tr>
+<td><sub>날짜별 요약을 각각 만든 뒤 <b>그 요약들을 다시 LLM에 넣어</b> 판단시킨다. 나열만 해서는 "어느 날이 더 바빴나"에 답이 안 나온다.</sub></td>
+<td><sub><b>진행한 작업 / 이어서 할 것 / 참고할 점</b> 세 갈래로 다시 쓴다. "그때 뭘 하다 말았지"를 이어서 하려면 검색 결과가 아니라 문장이 필요했다.</sub></td>
+</tr>
+
+<tr>
+<th>슬랙 초안 — 전송은 사람이</th>
+<th>집계 — LLM을 한 번도 안 부른다</th>
+</tr>
+<tr>
+<td><img src="docs/images/features/slack.gif" alt="슬랙 초안"></td>
+<td><img src="docs/images/q_count.png" alt="집계"></td>
+</tr>
+<tr>
+<td><sub>"방금 그거"라고만 해도 <b>직전 답변을 코드가 그대로 가져와</b> 재포맷한다 — LLM이 필터를 다시 추론하다 무관한 내용을 만든 사고가 있어서다. 실제 전송은 사용자가 버튼을 눌러야만 도는 별도 엔드포인트.</sub></td>
+<td><sub><code>count_range()</code>가 chroma metadata를 직접 세서 문자열만 조합한다. 요약문을 읽고 LLM이 세게 하면 <b>실제 340회를 "5회"로</b> 답하는 사고가 난다(실측).</sub></td>
+</tr>
+</table>
+
 <details>
-<summary><b>다섯 갈래가 실제로 어떻게 다른지 — 유형별 실제 응답 3건</b></summary>
+<summary><b>정적 화면으로 더 보기 — 유형별 실제 응답 3건</b></summary>
 
 <br>
 
@@ -169,7 +245,9 @@
 
 ---
 
-## 시스템 구조
+<a id="architecture"></a>
+
+## 🏗 3. 시스템 구조
 
 > **한 줄 요약** — 화면을 찍고 · 걸러내고 · 이해할 수 있는 형태로 쌓는 일까지 전부 자동으로
 > 돌아가고, 사용자는 **"어제 뭐 했지?"라고 평소 말투로 묻기만 하면 1.4초 안에 첫 문장을
@@ -178,6 +256,17 @@
 **사용자가 실제로 하는 일은 세 가지뿐이다** — ① 메뉴바 앱에서 녹화를 켜둔다 → ② 하루 끝에
 "동기화"를 누른다(색인·요약·전송이 알아서 돈다) → ③ 웹에서 묻는다. 아래 다이어그램의
 나머지 전부가 이 세 동작 뒤에서 자동으로 처리되는 부분이다.
+
+<div align="center">
+
+<img src="docs/images/architecture.svg" width="100%" alt="시스템 아키텍처 — Mac 로컬에서 임베딩까지 끝내고 EC2로는 벡터만 전송">
+
+</div>
+
+<details>
+<summary><b>데이터 흐름 상세 — 수집 · 색인 · 질의 · 서빙</b></summary>
+
+<br>
 
 ```mermaid
 flowchart LR
@@ -210,6 +299,8 @@ flowchart LR
     end
 ```
 
+</details>
+
 ### 기술 선택과 이유
 
 | 영역 | 선택 | 왜 |
@@ -225,7 +316,9 @@ flowchart LR
 
 ---
 
-## 파이프라인
+<a id="pipeline"></a>
+
+## ⚙️ 4. 파이프라인
 
 ### 1. 수집 → 정제 — 프레임은 검색 단위가 아니다
 
@@ -321,7 +414,9 @@ LangChain 버전에서 분기를 `RunnableBranch`로 안 옮긴 이유도 남겼
 
 ---
 
-## 평가
+<a id="evaluation"></a>
+
+## 📊 5. 평가
 
 ### 1. 라우팅 정확도 — 자기 검증의 편향까지 기록
 
@@ -406,7 +501,9 @@ LoRA 쪽은 "에러 없이 조용히 망가지는" 함정들이 존재했다 —
 
 ---
 
-## 핵심 설계 결정
+<a id="decisions"></a>
+
+## 🧭 6. 핵심 설계 결정
 
 전체 기록은 **[설계 결정 문서](docs/engineering-decisions.md)**에 있다. 여기서는 둘만.
 
@@ -444,7 +541,9 @@ LoRA 쪽은 "에러 없이 조용히 망가지는" 함정들이 존재했다 —
 
 ---
 
-## 트러블슈팅 — 재귀 오염
+<a id="troubleshooting"></a>
+
+## 🐛 7. 트러블슈팅 — 재귀 오염
 
 23건 전체는 [`docs/troubleshooting-star.md`](docs/troubleshooting-star.md)에 STAR 형식으로 있다.
 
@@ -485,7 +584,9 @@ LoRA 쪽은 "에러 없이 조용히 망가지는" 함정들이 존재했다 —
 
 ---
 
-## 성능
+<a id="performance"></a>
+
+## ⚡ 8. 성능
 
 캐시 적중과 무관하게 항상 재현되는 숫자와, 사전 계산이 있어야만 나오는 숫자를 나눠서 측정했다.
 
@@ -520,7 +621,9 @@ LoRA 쪽은 "에러 없이 조용히 망가지는" 함정들이 존재했다 —
 
 ---
 
-## 웹 서비스와 API
+<a id="web-api"></a>
+
+## 🖥 9. 웹 서비스와 API
 
 세 페이지 모두 의존성 없는 정적 HTML이고, 공유 디자인 토큰(`tokens.css`)만 같이 쓰도록 했다.
 
@@ -562,7 +665,9 @@ LoRA 쪽은 "에러 없이 조용히 망가지는" 함정들이 존재했다 —
 
 ---
 
-## 배포
+<a id="deployment"></a>
+
+## 🚀 10. 배포
 
 ```mermaid
 flowchart LR
@@ -630,7 +735,9 @@ flowchart LR
 
 ---
 
-## 개인정보
+<a id="privacy"></a>
+
+## 🔒 11. 개인정보
 
 화면 기록에는 메신저 대화와 로그인 화면이 들어있다. 처음부터 제약으로 뒀다.
 
@@ -645,7 +752,9 @@ flowchart LR
 
 ---
 
-## 알려진 한계와 해결 방향
+<a id="limitations"></a>
+
+## 🧱 12. 알려진 한계와 해결 방향
 
 남은 것과 해결 방안을 같이 적었다.
 
@@ -674,7 +783,9 @@ flowchart LR
 
 ---
 
-## 문서 지도
+<a id="docs-map"></a>
+
+## 📚 13. 문서 지도
 
 | 문서 | 내용 |
 |---|---|
@@ -693,7 +804,9 @@ flowchart LR
 
 ---
 
-## 빠른 시작
+<a id="quick-start"></a>
+
+## 🏁 14. 빠른 시작
 
 <details>
 <summary><b>설치 · 색인 · 실행 · 평가 — 명령어 펼치기</b></summary>
