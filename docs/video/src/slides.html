@@ -1,0 +1,611 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>screenlog — slides</title>
+<style>
+/* ── 프로젝트 tokens.css(dark)를 그대로 옮겨옴 ──────────────────────────
+   원칙도 같이 가져온다: UI는 무채색, 색은 데이터에만. */
+:root{
+  --plane:#0b0c0e; --surface:#17181b; --surface-2:#1d1f23; --surface-3:#26292e;
+  --ink:#f3f5f7; --ink-2:#b7bec6; --muted:#828a92;
+  --baseline:#383c42; --border:rgba(255,255,255,.10);
+  --accent:#3987e5; --warn:#e5a53a; --bad:#e66767; --good:#199e70;
+  --mono:"SF Mono",ui-monospace,Menlo,monospace;
+  --sans:"Apple SD Gothic Neo",system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1920px;height:1080px;overflow:hidden;background:var(--plane)}
+body{font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased}
+
+.slide{display:none;width:1920px;height:1080px;position:relative;
+  padding:96px 130px 90px;background:var(--plane)}
+.slide:target{display:flex;flex-direction:column}
+
+/* 상단 챕터 라벨 */
+.chapter{position:absolute;top:70px;left:130px;font-size:23px;color:var(--muted);
+  letter-spacing:.14em;font-weight:500}
+.chapter b{color:var(--ink-2);font-weight:600}
+
+/* 워드마크 — tokens.css의 .mark 글리프 재현 */
+.mark{position:absolute;bottom:66px;right:130px;display:flex;align-items:center;
+  gap:13px;font-size:22px;font-weight:600;color:var(--muted);letter-spacing:-.01em}
+.glyph{display:flex;gap:3px;align-items:center}
+.glyph i{width:6px;height:19px;border-radius:2px;background:var(--muted);display:block}
+.glyph i:nth-child(2){height:14px;background:var(--baseline)}
+.glyph i:nth-child(3){height:9px;background:var(--baseline)}
+
+.mid{margin:auto 0;width:100%}
+
+/* 타이포 */
+h1{font-size:78px;line-height:1.28;letter-spacing:-.032em;font-weight:700}
+h2{font-size:56px;line-height:1.3;letter-spacing:-.028em;font-weight:700;margin-bottom:44px}
+.lede{font-size:33px;line-height:1.6;color:var(--ink-2);font-weight:400}
+.sub{font-size:27px;color:var(--muted);line-height:1.6}
+.mono{font-family:var(--mono)}
+.hl{color:var(--accent)}
+.dim{color:var(--muted)}
+em{font-style:normal;color:var(--ink);font-weight:600}
+
+/* 타이틀 슬라이드 */
+.title-slide{align-items:flex-start;justify-content:center}
+.wordmark{display:flex;align-items:center;gap:26px;margin-bottom:38px}
+.wordmark .glyph i{width:15px;height:62px;border-radius:5px;background:var(--ink)}
+.wordmark .glyph i:nth-child(2){height:45px;background:var(--muted)}
+.wordmark .glyph i:nth-child(3){height:29px;background:var(--baseline)}
+.wordmark span{font-size:104px;font-weight:700;letter-spacing:-.045em}
+.rule{width:96px;height:4px;background:var(--baseline);border-radius:2px;margin:46px 0}
+
+/* 카드 3열 */
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:30px;margin-top:20px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:18px;
+  padding:42px 40px}
+.card .n{font-family:var(--mono);font-size:22px;color:var(--muted);margin-bottom:22px}
+.card .t{font-size:33px;font-weight:600;line-height:1.42;letter-spacing:-.02em;
+  margin-bottom:20px}
+.card .d{font-size:24px;line-height:1.66;color:var(--muted)}
+
+/* 지표 3열 */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:34px;margin-top:34px}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:20px;
+  padding:52px 44px;text-align:center}
+.stat .v{font-size:104px;font-weight:700;letter-spacing:-.045em;line-height:1;
+  color:var(--accent);font-family:var(--mono)}
+.stat .k{font-size:29px;font-weight:600;margin-top:26px}
+.stat .c{font-size:22px;color:var(--muted);margin-top:14px;line-height:1.55}
+
+/* 표 */
+table{width:100%;border-collapse:collapse;font-size:26px}
+th{text-align:left;font-size:21px;color:var(--muted);font-weight:500;padding:0 0 18px;
+  letter-spacing:.06em;border-bottom:1px solid var(--border)}
+td{padding:23px 0;border-bottom:1px solid var(--border);line-height:1.5;
+  vertical-align:top;color:var(--ink-2)}
+td:first-child{color:var(--ink);font-weight:600;padding-right:40px}
+tr:last-child td{border-bottom:none}
+td.num,th.num{font-family:var(--mono);text-align:center}
+.win{color:var(--accent);font-weight:700}
+.tag{display:inline-block;font-family:var(--mono);font-size:20px;color:var(--muted);
+  background:var(--surface-2);border:1px solid var(--border);border-radius:7px;
+  padding:5px 12px}
+
+/* 결론 배너 */
+.banner{margin-top:auto;padding-top:40px;font-size:31px;color:var(--ink);
+  line-height:1.55;letter-spacing:-.015em}
+.banner .arrow{color:var(--muted);font-family:var(--mono);margin-right:14px}
+
+/* 다이어그램 */
+.flow{display:flex;align-items:stretch;gap:0;margin-top:16px}
+.stage{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:18px;
+  padding:34px 30px}
+.stage h3{font-size:22px;color:var(--muted);font-weight:500;letter-spacing:.1em;
+  margin-bottom:26px}
+.node{font-family:var(--mono);font-size:23px;color:var(--ink);background:var(--surface-2);
+  border:1px solid var(--border);border-radius:10px;padding:15px 17px;margin-bottom:12px}
+.node small{display:block;font-family:var(--sans);font-size:19px;color:var(--muted);
+  margin-top:7px}
+.node.db{border-style:dashed;color:var(--ink-2)}
+.node.out{border-color:var(--accent);color:var(--accent)}
+.arr{display:flex;align-items:center;justify-content:center;width:64px;
+  font-size:34px;color:var(--baseline);font-family:var(--mono)}
+
+/* 이미지 슬라이드 */
+.shot{flex:1;display:flex;align-items:center;justify-content:center;margin-top:26px;
+  min-height:0}
+.shot img{max-width:100%;max-height:100%;object-fit:contain;border-radius:14px;
+  border:1px solid var(--border)}
+.shot-cap{margin-top:30px;font-size:26px;color:var(--muted);line-height:1.6}
+
+/* before/after */
+.ba{display:grid;grid-template-columns:1fr 88px 1fr;align-items:center;gap:0;margin-top:30px}
+.ba .box{background:var(--surface);border:1px solid var(--border);border-radius:20px;
+  padding:46px 42px}
+.ba .box.after{border-color:rgba(57,135,229,.45)}
+.ba .lbl{font-family:var(--mono);font-size:21px;color:var(--muted);margin-bottom:24px}
+.ba .box.after .lbl{color:var(--accent)}
+.ba .big{font-size:70px;font-weight:700;font-family:var(--mono);letter-spacing:-.04em;
+  line-height:1.1}
+.ba .box.after .big{color:var(--accent)}
+.ba .note{font-size:24px;color:var(--muted);margin-top:22px;line-height:1.55}
+.ba .mid-arr{text-align:center;font-size:40px;color:var(--baseline);font-family:var(--mono)}
+
+.quote{font-size:52px;line-height:1.5;letter-spacing:-.028em;font-weight:600}
+.quote .dim{font-weight:400}
+
+/* 실제 화면 캡처 — 원본 크기 그대로 깔고 아래에만 설명 띠를 얹는다.
+ * 축소해서 액자에 넣으면 답변 글씨가 영상에서 안 읽힌다. */
+.screen{padding:0}
+.screen img{position:absolute;inset:0;width:1920px;height:1080px;object-fit:cover;
+  object-position:top center}
+.screen .band{position:absolute;left:0;right:0;bottom:0;padding:150px 130px 54px;
+  background:linear-gradient(to top,rgba(11,12,14,.985) 58%,rgba(11,12,14,.88) 80%,rgba(11,12,14,0))}
+.screen .kind{font-size:23px;color:var(--accent);letter-spacing:.14em;font-weight:600;
+  margin-bottom:16px}
+.screen .cap{font-size:30px;line-height:1.52;letter-spacing:-.015em;color:var(--ink)}
+.screen .cap span{color:var(--muted)}
+</style>
+<link rel="stylesheet" href="motion.css">
+
+<!-- ══════════ 01 · 훅 ══════════ -->
+<section class="slide" id="s01">
+  <div class="mid">
+    <h1>금요일마다 주간 공유를 쓸 때가<br>제일 막막했다.</h1>
+    <p class="lede" style="margin-top:46px">분명 바빴는데, 뭘 했는지가 기억이 안 났다.</p>
+  </div>
+</section>
+
+<section class="slide" id="s02">
+  <div class="mid">
+    <h1 class="dim">하루 종일 화면을 보며 일했는데,<br>
+      <span style="color:var(--ink)">정작 그 기록은 어디에도 남아 있지 않았다.</span></h1>
+  </div>
+</section>
+
+<!-- ══════════ 타이틀 ══════════ -->
+<section class="slide title-slide" id="s03">
+  <div class="mid">
+    <div class="wordmark">
+      <span class="glyph"><i></i><i></i><i></i></span>
+      <span>screenlog</span>
+    </div>
+    <p class="lede" style="font-size:38px;color:var(--ink)">
+      내 화면 기록에 물어보면 <em>근거와 함께</em> 답하는 개인용 RAG</p>
+    <div class="rule"></div>
+    <p class="sub">
+      수집 · 정제 · 임베딩 · 검색 · 라우팅 · 요약 · 에이전트 · 서빙 · 배포<br>
+      <span style="color:var(--ink-2)">전부 한 저장소 안에 있고, 원본 데이터는 이 컴퓨터를 떠나지 않는다.</span>
+    </p>
+    <p class="sub mono" style="margin-top:42px;font-size:23px">
+      개인 프로젝트 · 1인 개발 · 커밋 68개 · 2026.07.28 — 08.06</p>
+  </div>
+</section>
+
+<!-- ══════════ 02 · 문제 ══════════ -->
+<section class="slide" id="s04">
+  <div class="chapter">01 <b>왜 만들었나</b></div>
+  <div class="mid">
+    <h2>기록은 쌓고 있었다. 문제는 <span class="dim">꺼내는 쪽</span>이었다.</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="n">01</div>
+        <div class="t">질문으로 못 꺼낸다</div>
+        <div class="d">screenpipe의 검색은 FTS5 키워드 매칭이다. 화면에 “Commit 타입”이라 찍혀 있으면
+          “커밋 컨벤션”으로는 안 잡힌다. “어제 뭐 했지”는 <em>애초에 키워드가 아니다.</em></div>
+      </div>
+      <div class="card">
+        <div class="n">02</div>
+        <div class="t">남에게 맡길 수 없다</div>
+        <div class="d">화면 기록에는 메신저 대화와 로그인 화면이 그대로 들어있다.
+          업로드형 서비스는 무엇이 올라가는지를 <em>내가 통제할 수 없다.</em></div>
+      </div>
+      <div class="card">
+        <div class="n">03</div>
+        <div class="t">필요한 건 맥락의 복원</div>
+        <div class="d">주간 공유에 붙일 수 있는 건 링크 목록이 아니라 문장이다.
+          그래서 검색 위에 <em>인수인계 문서</em>와 <em>슬랙 초안</em>을 출력 양식으로 올렸다.</div>
+      </div>
+    </div>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<section class="slide" id="s05">
+  <div class="chapter">01 <b>왜 만들었나</b></div>
+  <div class="mid">
+    <h2>개인정보가 기능이 아니라 <span class="hl">제약으로 먼저</span> 있었다.</h2>
+    <table>
+      <tr><th style="width:34%">처음부터 걸어둔 제약</th><th>어떻게 지켰나</th></tr>
+      <tr><td>원본은 이 컴퓨터를 떠나지 않는다</td>
+        <td>수집 단계에서 PII 리덕션을 켜고 리덕션본을 <span class="tag">mode=ro</span>로만 읽는다.
+          임베딩을 로컬에서 끝낸 뒤 서버로는 <em>리덕션된 텍스트와 그 벡터만</em> 올린다</td></tr>
+      <tr><td>답에는 항상 근거가 붙는다</td>
+        <td><span class="tag">search()</span>와 <span class="tag">ask()</span>를 일부러 분리했다 —
+          합쳐두면 엉뚱한 걸 가져와도 그럴듯한 답이 나와서 <em>눈치채지 못한다</em></td></tr>
+      <tr><td>언제든 갈아끼울 수 있어야 한다</td>
+        <td>LLM은 게이트웨이 · Anthropic · Ollama <em>3중 스위치</em>.
+          환경변수 한 줄로 완전 로컬까지 내려간다</td></tr>
+    </table>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<!-- ══════════ 03 · 데모 ══════════ -->
+<section class="slide" id="s06">
+  <div class="chapter">02 <b>동작</b></div>
+  <div class="mid">
+    <h1>랜딩 <span class="dim">→</span> 설치 <span class="dim">→</span> 탐색
+      <span class="dim">→</span> 질문 <span class="dim">→</span> 답변</h1>
+    <p class="lede" style="margin-top:44px">실제 화면 · <em>편집도 가속도 없음</em></p>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<section class="slide" id="s07">
+  <div class="chapter">02 <b>동작</b></div>
+  <div class="mid">
+    <h2>질문은 한 종류가 아니다.<br>
+      <span class="dim">같은 파이프라인으로 처리하면 전부 틀린다.</span></h2>
+    <table>
+      <tr><th style="width:13%">유형</th><th style="width:31%">예시</th><th>답을 만드는 방식</th></tr>
+      <tr><td>검색</td><td class="dim">“코드트리에서 뭐 풀었어?”</td>
+        <td>벡터 검색 top-k → LLM이 근거로 답변</td></tr>
+      <tr><td>정리</td><td class="dim">“어제 하루 정리해줘”</td>
+        <td>날짜별 요약을 병렬 생성해 <em>먼저 끝난 것부터</em> 스트리밍</td></tr>
+      <tr><td>비교</td><td class="dim">“이번 주 언제가 제일 바빴어?”</td>
+        <td>날짜별 요약 → 그 요약들을 다시 LLM으로 비교</td></tr>
+      <tr><td>집계</td><td class="dim">“카톡 몇 번 켰어?”</td>
+        <td><span class="hl">LLM을 안 거친다.</span> metadata를 코드가 직접 센다</td></tr>
+      <tr><td>복합</td><td class="dim">“몇 번 봤는지랑 뭘 봤는지 같이”</td>
+        <td>ReAct 에이전트가 위 도구들을 골라 조합</td></tr>
+    </table>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<section class="slide" id="s08">
+  <div class="chapter">02 <b>동작</b> · 집계</div>
+  <h2 style="margin:52px 0 0;font-size:48px">“이번 주에 어떤 앱을 제일 많이 썼어?”</h2>
+  <div class="shot"><img src="shots/q_count_crop.png" alt=""></div>
+  <p class="shot-cap"><span class="hl">LLM을 한 번도 안 부른 답이다.</span>
+    <span class="mono" style="font-size:24px">count_range()</span>가 chroma metadata를 직접 세서
+    문자열만 조합한다 — 요약문을 읽고 LLM이 세게 하면 실제 340회를 “5회”로 답하는 사고가 난다.</p>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<!-- ══════════ 04 · 구조 ══════════ -->
+<section class="slide" id="s09">
+  <div class="chapter">03 <b>구조</b></div>
+  <div class="mid">
+    <h2 style="margin-bottom:36px">무거운 일은 전부 로컬에서 끝낸다.</h2>
+    <div class="flow">
+      <div class="stage">
+        <h3>수집 · 로컬</h3>
+        <div class="node">screenpipe<small>화면 캡처 + OCR/AX + PII 리덕션</small></div>
+        <div class="node db">db.sqlite<small>읽기 전용 · 로컬을 안 떠남</small></div>
+      </div>
+      <div class="arr">→</div>
+      <div class="stage">
+        <h3>색인 · 로컬</h3>
+        <div class="node">clean.py<small>프레임 2,215 → 이벤트 1,164 · 글자 −75%</small></div>
+        <div class="node">index.py<small>BGE-M3 임베딩 · 내용 해시 id</small></div>
+        <div class="node db">chroma<small>벡터만 HTTPS 전송</small></div>
+      </div>
+      <div class="arr">→</div>
+      <div class="stage">
+        <h3>질의</h3>
+        <div class="node">router.py<small>구조화 출력 1회로 필터 전부 추출</small></div>
+        <div class="node">ask · summarize<small>검색 · 정리 · 비교 · 집계</small></div>
+        <div class="node">agent.py<small>복합이면 ReAct 루프</small></div>
+      </div>
+      <div class="arr">→</div>
+      <div class="stage">
+        <h3>서빙</h3>
+        <div class="node">api.py<small>FastAPI · SSE · Basic Auth</small></div>
+        <div class="node out">답변 + 근거<small>캡처 시각 · 앱 · 창 제목 · 실제 URL</small></div>
+      </div>
+    </div>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<section class="slide" id="s10">
+  <div class="chapter">03 <b>구조</b> · 설계 결정</div>
+  <div class="mid">
+    <h2>LLM에게 <span class="dim">시키면 안 되는 일</span>을 가려냈다.</h2>
+    <table>
+      <tr><th style="width:26%">맡겼더니</th><th style="width:34%">실제 결과</th><th>조치</th></tr>
+      <tr><td>사용 횟수 세기</td>
+        <td>실제 <span class="win">340회</span>를 <span style="color:var(--bad);font-weight:700">“5회”</span>로 답함</td>
+        <td><span class="tag">count_range()</span> — metadata를 코드가 직접 셈</td></tr>
+      <tr><td>요일 계산</td><td>7/27을 일요일이라고 답함</td>
+        <td>요일을 미리 계산해 프롬프트에 주입</td></tr>
+      <tr><td>앱 이름 추론</td><td>코퍼스에 없는 앱을 지어냄</td>
+        <td>JSON Schema <span class="tag">enum</span>으로 <em>API 레벨에서 차단</em></td></tr>
+      <tr><td>URL 인용</td><td>영상 제목을 붙여 가짜 링크 생성</td>
+        <td>이벤트에 실제 <span class="tag">url</span>을 저장해 근거에 같이 넣음</td></tr>
+    </table>
+    <div class="banner"><span class="arrow">→</span>
+      <em>LLM은 문장을 쓰고, 세고 거르는 일은 코드가 한다.</em></div>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<!-- ══════════ 05 · 평가 ══════════ -->
+<section class="slide" id="s11">
+  <div class="chapter">04 <b>평가</b></div>
+  <div class="mid">
+    <h1>개선을 말하기 전에<br>잴 방법부터 만들었다.</h1>
+    <p class="lede" style="margin-top:46px">
+      골든셋 <em>25문항</em>을 직접 라벨링했다. 라벨링 도구부터 자작했고,<br>
+      그 도구를 만들다가 <em>프로덕션 필터 로직이 빠진 것</em>도 발견했다.</p>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<section class="slide" id="s12">
+  <div class="chapter">04 <b>평가</b> · 검색 recall</div>
+  <div class="mid">
+    <h2>“검색이 정답을 가져오는지” 재고 나서 <span class="hl">k를 낮췄다.</span></h2>
+    <table style="font-size:30px">
+      <tr><th>k</th><th class="num">5</th><th class="num">6</th><th class="num">7</th>
+        <th class="num" style="color:var(--accent)">8</th><th class="num">9</th>
+        <th class="num">10</th><th class="num">20</th></tr>
+      <tr><td>평균 recall</td><td class="num">0.86</td><td class="num">0.89</td>
+        <td class="num">0.93</td><td class="num win" style="font-size:40px">0.99</td>
+        <td class="num">0.99</td><td class="num">1.00</td><td class="num">1.00</td></tr>
+    </table>
+    <div class="banner"><span class="arrow">→</span>
+      <span class="tag" style="font-size:24px">RETRIEVE_K</span> 10 → 8.
+      <em>recall 1%p를 내주고 프롬프트 근거를 20% 절감</em>한 트레이드오프.<br>
+      <span class="sub" style="display:block;margin-top:20px">
+        라벨링 도중 저지른 실수 두 건도 리포트에 그대로 남겼다 —
+        실수를 지우면 그 지표가 왜 그 값인지 다음 사람이 복원할 수 없다.</span></div>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<section class="slide" id="s13">
+  <div class="chapter">04 <b>평가</b> · 검색 전략</div>
+  <div class="mid">
+    <h2>7종을 같은 채점 함수로 비교하고 — <span class="dim">아무것도 바꾸지 않았다.</span></h2>
+    <table>
+      <tr><th style="width:44%">방법</th><th class="num">R@5</th><th class="num">P@5</th>
+        <th class="num">F1@5</th><th class="num">R@10</th></tr>
+      <tr><td><span class="hl">dense (프로덕션)</span></td><td class="num win">0.95</td>
+        <td class="num">0.60</td><td class="num win">0.69</td><td class="num win">1.00</td></tr>
+      <tr><td>bm25</td><td class="num">0.63</td><td class="num">0.34</td>
+        <td class="num">0.42</td><td class="num">0.71</td></tr>
+      <tr><td>하이브리드 (dense+bm25, RRF)</td><td class="num">0.94</td><td class="num">0.50</td>
+        <td class="num">0.61</td><td class="num">0.97</td></tr>
+      <tr><td>리랭커 (cross-encoder)</td><td class="num">0.93</td><td class="num">0.63</td>
+        <td class="num">0.69</td><td class="num">0.96</td></tr>
+      <tr><td>HyDE</td><td class="num">0.68</td><td class="num">0.35</td>
+        <td class="num">0.44</td><td class="num">0.80</td></tr>
+    </table>
+    <div class="banner"><span class="arrow">→</span>
+      “코퍼스가 커지면 하이브리드가 필요하다”는 <em>로드맵의 가정을 검증</em>했다.
+      임베딩도 3종 비교 — <span class="mono" style="font-size:26px">bge-m3 0.69 ·
+      e5-large 0.50 · ko-sroberta 0.37</span></div>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<section class="slide" id="s14">
+  <div class="chapter">04 <b>평가</b> · 리랭커를 기각한 이유</div>
+  <div class="mid">
+    <h2>평균이 같다고 <span class="dim">“차이 없음”이 아니었다.</span></h2>
+    <table style="font-size:29px">
+      <tr><th style="width:46%">문항</th><th class="num">dense</th>
+        <th class="num">리랭커</th><th style="width:24%">무슨 일이</th></tr>
+      <tr><td>정답이 하나뿐인 질문 <span class="tag">r15</span></td><td class="num">0.50</td>
+        <td class="num win">1.00</td><td style="color:var(--good);font-weight:600">크게 개선</td></tr>
+      <tr><td>정답이 여러 페이지인 질문 <span class="tag">r08</span></td><td class="num">1.00</td>
+        <td class="num" style="color:var(--bad);font-weight:700">0.33</td>
+        <td style="color:var(--bad);font-weight:600">크게 악화</td></tr>
+    </table>
+    <div class="banner"><span class="arrow">→</span>
+      cross-encoder가 “가장 그럴듯한 하나”로 수렴해 정답이 갈리는 질문의 나머지를 밀어냈다.
+      평균이 같았던 건 개선분과 악화분이 <em>우연히 상쇄</em>된 결과였다 — <em>도입 보류.</em><br>
+      <span class="sub" style="display:block;margin-top:20px">
+        평균만 보고 채택했다면 특정 질문 유형이 조용히 망가졌을 것이다.</span></div>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<!-- ══════════ 06 · 성능 ══════════ -->
+<section class="slide" id="s15">
+  <div class="chapter">05 <b>성능</b></div>
+  <div class="mid">
+    <h2><span class="tag" style="font-size:30px">asyncio.gather</span>는 밖에서 보면
+      <span class="dim">가장 느린 하루가 전체를 결정한다.</span></h2>
+    <div class="ba">
+      <div class="box">
+        <div class="lbl">전 — gather · 다 끝나야 반환</div>
+        <div class="big">5.3<span style="font-size:36px">~7.3초</span></div>
+        <div class="note">첫 토큰이 나올 때까지 <em>화면이 비어 있다</em></div>
+      </div>
+      <div class="mid-arr">→</div>
+      <div class="box after">
+        <div class="lbl">후 — as_completed · 먼저 끝난 것부터</div>
+        <div class="big">1.4<span style="font-size:36px">~1.9초</span></div>
+        <div class="note">캐시 적중과 <em>무관하게 항상 재현</em></div>
+      </div>
+    </div>
+    <div class="banner"><span class="arrow">→</span>
+      <em>총 완료 시간은 거의 그대로다(5.0~5.2초)</em> — 하는 일의 총량은 안 줄었으니 당연하다.
+      대신 체감 대기가 약 4배 당겨졌다.<br>
+      <span class="sub" style="display:block;margin-top:20px">
+        “동기 search()가 이벤트 루프를 막는다”는 진단으로 to_thread를 적용했다가,
+        막던 시간이 전체의 3%도 안 돼서 <em>되돌린 것도 기록에 남겼다.</em></span></div>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<section class="slide" id="s16">
+  <div class="chapter">05 <b>성능</b> · 결과</div>
+  <div class="mid">
+    <h2>측정해서 바꾼 것만 숫자로 남겼다.</h2>
+    <div class="stats">
+      <div class="stat"><div class="v">0.99</div><div class="k">검색 recall@8</div>
+        <div class="c">골든셋 25문항 직접 라벨링</div></div>
+      <div class="stat"><div class="v">1.4<span style="font-size:52px">초</span></div>
+        <div class="k">첫 응답 · 5.3초에서</div>
+        <div class="c">as_completed — 캐시 적중과 무관</div></div>
+      <div class="stat"><div class="v">−97.7<span style="font-size:52px">%</span></div>
+        <div class="k">하루 요약 프롬프트</div>
+        <div class="c">100만 자 → 2.3만 자, 하루 커버는 유지</div></div>
+    </div>
+    <div class="banner" style="padding-top:44px"><span class="arrow">→</span>
+      캐시 적중이 있어야만 나오는 숫자와 <em>항상 재현되는 숫자를 나눠서</em> 다시 쟀다 —
+      처음 헤드라인으로 쓴 4.6초가 정직하지 않았기 때문이다.</div>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<!-- ══════════ 07 · 마무리 ══════════ -->
+<section class="slide" id="s17">
+  <div class="chapter">06 <b>만든 것</b></div>
+  <div class="mid">
+    <h2>웹 서비스 + 수집 Mac 앱 + 자동 배포</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="n">SERVICE</div>
+        <div class="t">랜딩 · 물어보기 · 탐색</div>
+        <div class="d">의존성 없는 정적 HTML 세 페이지.
+          라우팅 배지 · 근거 카드 · 활동 잔디 · <em>검색 후보 편중</em> 지표까지.</div>
+      </div>
+      <div class="card">
+        <div class="n">MAC APP</div>
+        <div class="t">메뉴바 수집·동기화</div>
+        <div class="d">저장소 클론도 uv도 SSH 키도 없이 <span class="tag">.dmg</span> 하나로.
+          임베딩 전에 서버에 <em>이미 있는 id를 먼저 묻는다.</em></div>
+      </div>
+      <div class="card">
+        <div class="n">DEPLOY</div>
+        <div class="t">push 한 번으로 재배포</div>
+        <div class="d">GitHub Actions → GHCR → EC2.
+          키가 없으면 <em>서버가 기동 자체를 거부</em>한다.</div>
+      </div>
+    </div>
+    <div class="banner" style="padding-top:40px">
+      <span class="mono" style="font-size:26px;color:var(--muted)">
+        Python 3.14 · FastAPI · SSE · ChromaDB · BAAI/bge-m3 · LangGraph · Docker · py2app</span></div>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<section class="slide" id="s18">
+  <div class="chapter">06 <b>만든 것</b> · 남은 것</div>
+  <div class="mid">
+    <h2>해결한 것만 쓰면 <span class="dim">리포트가 아니라 광고가 된다.</span></h2>
+    <table>
+      <tr><th style="width:46%">알려진 한계</th><th>해결 방향</th></tr>
+      <tr><td>Discord 캡처가 실제 메시지가 아닌 사이드바 위주로 찍힘</td>
+        <td>이미 저장 중인 <span class="tag">text_source</span>로 AX일 때 채팅 영역만 취하도록 수집을 좁힌다</td></tr>
+      <tr><td>비교형 · 집계형의 <em>정확도</em> 미검증 (“크래시 안 남”까지만)</td>
+        <td>집계는 metadata에서 정답을 코드로 산출할 수 있다 → <em>자동 채점</em></td></tr>
+      <tr><td>로컬 LLM recency bias 해법 두 가지 모두 검증만 하고 미반영</td>
+        <td>LoRA는 GGUF 교체, 프롬프트 분할은 map-reduce 추가로 실사용에 연결</td></tr>
+    </table>
+    <div class="banner"><span class="arrow">→</span>
+      트러블슈팅 <em>23건</em>과 기각한 결론까지
+      <span class="tag" style="font-size:24px">docs/</span>
+      <span class="tag" style="font-size:24px">eval/</span> 에 원문으로 남아 있다.</div>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>
+
+<section class="slide title-slide" id="s19">
+  <div class="mid">
+    <div class="wordmark">
+      <span class="glyph"><i></i><i></i><i></i></span>
+      <span>screenlog</span>
+    </div>
+    <p class="lede" style="font-size:36px;color:var(--ink);margin-top:8px">
+      이 프로젝트의 절반은 코드가 아니라 <em>기록</em>이다.</p>
+    <div class="rule"></div>
+    <p class="sub" style="font-size:30px;color:var(--ink-2)">
+      백엔드 3,724줄 · 평가 스크립트 2,558줄 · 기술 문서 3,989줄<br>
+      이벤트 30,521개 · 15일치 · 앱 27종</p>
+    <p class="mono" style="margin-top:52px;font-size:29px;color:var(--accent)">
+      github.com/kkkk2058/screenlog</p>
+  </div>
+</section>
+
+<!-- ══════════ 기능 5종 — 실행 중인 앱에서 그대로 받은 답변 ══════════ -->
+<section class="slide screen" id="s22">
+  <img src="shots/t0.png" alt="">
+  <div class="band">
+    <div class="kind">검색 · SEARCH</div>
+    <p class="cap">질문 아래에 <b>라우팅 결과가 배지로</b> 먼저 뜨고, 답 아래에 <b>근거 8개</b>가 붙는다 —
+      각 항목에 캡처 시각 · 앱 · 창 제목 · 거리 점수가 그대로 달린다.<br>
+      <span>화면에서 읽힌 원문 그대로라 OCR 노이즈까지 사용자가 직접 검증할 수 있다.</span></p>
+  </div>
+</section>
+
+<section class="slide screen" id="s23">
+  <img src="shots/t1.png" alt="">
+  <div class="band">
+    <div class="kind">정리 · SUMMARIZE</div>
+    <p class="cap">하루를 시각순으로 복원한다. 유튜브·Notion·카카오톡·Discord·터미널이
+      <b>한 줄기로 이어져</b> 나온다.<br>
+      <span>날짜별 요약을 병렬 생성해 먼저 끝난 것부터 스트리밍한다 — 첫 문장이 1.4초.</span></p>
+  </div>
+</section>
+
+<section class="slide screen" id="s24">
+  <img src="shots/t2.png" alt="">
+  <div class="band">
+    <div class="kind">비교 · COMPARE</div>
+    <p class="cap">날짜별 요약을 <b>각각 만든 뒤 그 요약들을 다시 LLM에 넣어</b> 판단시킨다.
+      근거로 든 시간대와 활동을 짚으면서 결론을 낸다.<br>
+      <span>요약을 나열만 해서는 “어느 날이 더 바빴나”라는 날짜를 가로지르는 질문에 답이 안 나온다.</span></p>
+  </div>
+</section>
+
+<section class="slide screen" id="s25">
+  <img src="shots/t3.png" alt="">
+  <div class="band">
+    <div class="kind">인수인계 · HANDOVER</div>
+    <p class="cap"><b>진행한 작업 / 이어서 할 것 / 참고할 점</b> 세 갈래 양식으로 다시 쓴다.
+      에이전트가 <span class="mono">draft_handover_doc</span>을 골라 부른 결과다.<br>
+      <span>“그때 뭘 하다 말았지”를 이어서 하려면 검색 결과가 아니라 문장이 필요했다.</span></p>
+  </div>
+</section>
+
+<section class="slide screen" id="s26">
+  <img src="shots/t4.png" alt="">
+  <div class="band">
+    <div class="kind">슬랙 · SHARE</div>
+    <p class="cap">“방금 그거”라고만 해도 <b>직전 답변을 코드가 그대로 가져다</b> 재포맷한다 —
+      LLM이 필터를 다시 추론하다 무관한 내용을 만든 사고가 있어서다.<br>
+      <span>초안까지만. 실제 전송은 <b>사용자가 이 버튼을 눌러야만</b> 도는 별도 엔드포인트다.</span></p>
+  </div>
+</section>
+
+<!-- ══════════ 데모 프레임 — 이 위에 journey.gif를 오버레이한다 ══════════ -->
+<section class="slide" id="s21">
+  <div class="chapter">02 <b>동작</b> · 실제 화면</div>
+  <p style="position:absolute;top:104px;left:130px;font-size:31px;color:var(--ink-2);
+    letter-spacing:-.015em">
+    랜딩 <span style="color:var(--muted)">→</span> 설치 안내
+    <span style="color:var(--muted)">→</span> 탐색
+    <span style="color:var(--muted)">→</span> 물어보기
+    <span style="color:var(--muted)">→</span> 답변
+    <span style="color:var(--muted)"> &nbsp;·&nbsp; 편집도 가속도 없음</span></p>
+  <div style="position:absolute;left:270px;top:166px;width:1380px;height:864px;
+    border:2px solid rgba(255,255,255,.16);border-radius:6px"></div>
+</section>
+
+<!-- ══════════ 리캡 전용 ══════════ -->
+<section class="slide" id="s20">
+  <div class="chapter">01 <b>왜 만들었나</b></div>
+  <div class="mid">
+    <h1>화면 기록은 쌓여 있었다.<br><span class="dim">문제는 꺼내는 쪽이었다.</span></h1>
+    <p class="lede" style="margin-top:46px">
+      기존 검색은 <em>FTS5 키워드 매칭</em>이라 “Commit 타입”이 찍혀 있어도
+      “커밋 컨벤션”으로는 안 잡힌다.<br>
+      게다가 “어제 뭐 했지”, “이번 주 언제가 제일 바빴어”는
+      <em>애초에 키워드로 표현할 수 있는 형태가 아니다.</em></p>
+    <p class="sub" style="margin-top:36px">
+      그렇다고 메신저 대화와 로그인 화면이 담긴 기록을 통째로 남에게 맡길 수도 없었다.</p>
+  </div>
+  <div class="mark"><span class="glyph"><i></i><i></i><i></i></span>screenlog</div>
+</section>

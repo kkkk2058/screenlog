@@ -1,0 +1,80 @@
+/* 모션 레이어 — 슬라이드 위에 얹는 등장 애니메이션과 깊이감.
+ *
+ * 핵심 규칙 두 가지:
+ *  1) 이징은 전부 --ease 하나로 통일한다. 요소마다 다른 곡선을 쓰면
+ *     "여러 사람이 만든 화면"처럼 보인다.
+ *  2) 등장은 순서대로 겹쳐 들어온다(stagger). 한꺼번에 나타나면 슬라이드,
+ *     차례로 쌓이면 영상이 된다.
+ *
+ * 실제 delay 부여는 capture.py가 주입하는 런타임이 한다 — 요소마다 --i를
+ * 손으로 매기면 슬라이드를 고칠 때마다 어긋난다.
+ */
+:root{
+  --ease: cubic-bezier(.16,1,.3,1);
+  --rise: 28px;
+  --dur: .85s;
+}
+
+/* ── 깊이 ─────────────────────────────────────────────────────
+ * 완전 평평한 검정 위에 텍스트만 얹으면 싸구려로 보인다.
+ * 아주 약한 방사형 광원 + 비네트로 화면에 중심을 만든다. */
+.slide::before{
+  content:""; position:absolute; inset:0; pointer-events:none; z-index:0;
+  background:
+    radial-gradient(1100px 620px at 22% 26%, rgba(57,135,229,.075), transparent 62%),
+    radial-gradient(900px 560px at 84% 74%, rgba(120,140,180,.045), transparent 60%);
+}
+.slide::after{
+  content:""; position:absolute; inset:0; pointer-events:none; z-index:60;
+  background: radial-gradient(120% 88% at 50% 45%, transparent 58%, rgba(0,0,0,.42));
+}
+.slide > *{ position:relative; z-index:1; }
+/* 실제 화면 캡처 슬라이드는 광원이 UI를 물들이면 안 된다 */
+.slide.screen::before{ display:none; }
+
+/* ── 등장 ─────────────────────────────────────────────────── */
+@keyframes rise{
+  from{ opacity:0; transform:translate3d(0,var(--rise),0); }
+  to  { opacity:1; transform:none; }
+}
+@keyframes fadein{ from{opacity:0} to{opacity:1} }
+@keyframes growx{ from{transform:scaleX(0)} to{transform:scaleX(1)} }
+@keyframes wipe{ from{clip-path:inset(0 100% 0 0)} to{clip-path:inset(0 0 0 0)} }
+
+[data-a]{
+  animation: rise var(--dur) var(--ease) both;
+  animation-delay: calc(var(--i,0) * .065s);
+}
+[data-a="fade"]{ animation-name: fadein; }
+[data-a="wipe"]{ animation-name: wipe; animation-duration:1.05s; }
+[data-a="bar"]{ animation-name: growx; transform-origin:left center; }
+
+/* 슬라이드 전체가 아주 천천히 밀려 들어온다 — 정지 프레임이 없게 */
+.slide{ animation: driftin 9s linear both; }
+@keyframes driftin{ from{transform:scale(1)} to{transform:scale(1.018)} }
+.slide.screen{ animation:none; }   /* 캡처 화면은 ffmpeg 쪽에서 밀어준다 */
+
+/* ── 강조 ─────────────────────────────────────────────────── */
+/* 큰 수치 뒤에 은은한 광 — 숫자가 화면의 주인공임을 만든다 */
+.stat{ position:relative; overflow:hidden; }
+.stat::before{
+  content:""; position:absolute; left:50%; top:-30%; width:320px; height:320px;
+  transform:translateX(-50%); pointer-events:none;
+  background:radial-gradient(circle, rgba(57,135,229,.20), transparent 68%);
+}
+.stat .v{ position:relative; }
+
+/* 표에서 결론에 해당하는 줄만 살짝 띄운다 */
+tr[data-hero] td{ background:linear-gradient(90deg, rgba(57,135,229,.10), transparent 72%); }
+
+/* ── 설명 띠만 투명 배경으로 뽑기 ────────────────────────────
+ * 기능 5종은 정지 캡처가 아니라 실제로 돌아가는 UI를 프레임으로 찍는다.
+ * 그 위에 얹을 자막 띠만 따로 알파 PNG로 뽑아서 ffmpeg가 합성한다. */
+/* html/body의 배경까지 지워야 omit_background가 알파를 만든다 —
+ * .slide만 투명하게 하면 body가 그대로 불투명해서, 자막 띠가 아니라
+ * 검은 판 한 장이 나와 영상에서 UI를 통째로 덮는다. */
+.bandonly, .bandonly body{ background:transparent !important; }
+.bandonly .slide.screen{ background:transparent; }
+.bandonly .slide.screen img{ display:none; }
+.bandonly .slide.screen::before,
+.bandonly .slide.screen::after{ display:none; }
